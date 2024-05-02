@@ -22,6 +22,7 @@
 #include "Emu/Io/Buzz.h"
 #include "Emu/Io/buzz_config.h"
 #include "Emu/Io/GameTablet.h"
+#include "Emu/Io/GunCon3.h"
 #include "Emu/Io/Turntable.h"
 #include "Emu/Io/turntable_config.h"
 #include "Emu/Io/RB3MidiKeyboard.h"
@@ -317,9 +318,9 @@ usb_handler_thread::usb_handler_thread()
 		}
 
 		// Top Shot Elite controllers
-		check_device(0x12BA, 0x04A0, 0x04A0, "RO Gun Controller");
-		check_device(0x12BA, 0x04A1, 0x04A1, "RO Gun Controller 2012");
-		check_device(0x12BA, 0x04B0, 0x04B0, "RO Fishing Rod");
+		check_device(0x12BA, 0x04A0, 0x04A0, "Top Shot Elite");
+		check_device(0x12BA, 0x04A1, 0x04A1, "Top Shot Fearmaster");
+		check_device(0x12BA, 0x04B0, 0x04B0, "Rapala Fishing Rod");
 
 		// GT5 Wheels&co
 		check_device(0x046D, 0xC283, 0xC29B, "lgFF_c283_c29b");
@@ -339,14 +340,14 @@ usb_handler_thread::usb_handler_thread()
 		check_device(0x054C, 0x0042, 0x0042, "buzzer2");
 		check_device(0x046D, 0xC220, 0xC220, "buzzer9");
 
-		// GCon3 Gun
-		check_device(0x0B9A, 0x0800, 0x0800, "guncon3");
+		// GunCon3 Gun
+		check_device(0x0B9A, 0x0800, 0x0800, "GunCon3");
 
 		// uDraw GameTablet
 		check_device(0x20D6, 0xCB17, 0xCB17, "uDraw GameTablet");
 
 		// DVB-T
-		check_device(0x1415, 0x0003, 0x0003, " PlayTV SCEH-0036");
+		check_device(0x1415, 0x0003, 0x0003, "PlayTV SCEH-0036");
 
 		// 0x0900: "H050 USJ(C) PCB rev00", 0x0910: "USIO PCB rev00"
 		if (check_device(0x0B9A, 0x0900, 0x0910, "PS3A-USJ"))
@@ -484,6 +485,17 @@ usb_handler_thread::usb_handler_thread()
 	{
 		sys_usbd.notice("Adding emulated uDraw GameTablet");
 		usb_devices.push_back(std::make_shared<usb_device_gametablet>(get_new_location()));
+	}
+
+	if (g_cfg.io.guncon3 != guncon3_handler::disabled)
+	{
+		sys_usbd.notice("Adding emulated GunCon3 (controller 1)");
+		usb_devices.push_back(std::make_shared<usb_device_guncon3>(0, get_new_location()));
+	}
+	if (g_cfg.io.guncon3 == guncon3_handler::two_controllers)
+	{
+		sys_usbd.notice("Adding emulated GunCon3 (controller 2)");
+		usb_devices.push_back(std::make_shared<usb_device_guncon3>(1, get_new_location()));
 	}
 }
 
