@@ -3695,17 +3695,11 @@ s32 error_code::error_report(s32 result, const logs::message* channel, const cha
 	return result;
 }
 
-void Emulator::ConfigurePPUCache(bool with_title_id) const
+void Emulator::ConfigurePPUCache() const
 {
 	auto& _main = g_fxo->get<main_ppu_module>();
 
-	_main.cache = rpcs3::utils::get_cache_dir();
-
-	if (with_title_id && !m_title_id.empty() && m_cat != "1P")
-	{
-		_main.cache += GetTitleID();
-		_main.cache += '/';
-	}
+	_main.cache = rpcs3::utils::get_cache_dir(_main.path);
 
 	fmt::append(_main.cache, "ppu-%s-%s/", fmt::base57(_main.sha1), _main.path.substr(_main.path.find_last_of('/') + 1));
 
