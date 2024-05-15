@@ -1260,6 +1260,36 @@ bool handle_access_violation(u32 addr, bool is_writing, ucontext_t* context) noe
 
 	const auto cpu = get_current_cpu_thread();
 
+	struct spu_unsavable
+	{
+		spu_thread* _spu;
+
+		spu_unsavable(cpu_thread* cpu) noexcept
+			: _spu(cpu ? cpu->try_get<spu_thread>() : nullptr)
+		{
+			if (_spu)
+			{
+				if (_spu->unsavable)
+				{
+					_spu = nullptr;
+				}
+				else
+				{
+					// Must not be saved inside access violation handler because it is unpredictable
+					_spu->unsavable = true;
+				}
+			}
+		}
+
+		~spu_unsavable() noexcept
+		{
+			if (_spu)
+			{
+				_spu->unsavable = false;
+			}
+		}
+	} spu_protection{cpu};
+
 	if (addr < RAW_SPU_BASE_ADDR && vm::check_addr(addr) && rsx::g_access_violation_handler)
 	{
 		bool state_changed = false;
@@ -1636,7 +1666,7 @@ bool handle_access_violation(u32 addr, bool is_writing, ucontext_t* context) noe
 			if (!g_tls_access_violation_recovered)
 			{
 				vm_log.notice("\n%s", dump_useful_thread_info());
-				vm_log.error("[%s] Access violation %s location 0x%x (%s)", cpu->get_name(), is_writing ? "writing" : "reading", addr, (is_writing && vm::check_addr(addr)) ? "read-only memory" : "unmapped memory");
+				vm_log.always()("[%s] Access violation %s location 0x%x (%s)", cpu->get_name(), is_writing ? "writing" : "reading", addr, (is_writing && vm::check_addr(addr)) ? "read-only memory" : "unmapped memory");
 			}
 
 			// TODO:
