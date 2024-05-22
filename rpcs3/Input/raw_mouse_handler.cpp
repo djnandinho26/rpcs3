@@ -38,12 +38,45 @@ raw_mouse::raw_mouse(u32 index, const std::string& device_name, void* handle, ra
 		if (const auto& player = ::at32(g_cfg_raw_mouse.players, m_index))
 		{
 			m_mouse_acceleration = static_cast<float>(player->mouse_acceleration.get()) / 100.0f;
+
+			m_buttons[CELL_MOUSE_BUTTON_1] = get_mouse_button(player->mouse_button_1);
+			m_buttons[CELL_MOUSE_BUTTON_2] = get_mouse_button(player->mouse_button_2);
+			m_buttons[CELL_MOUSE_BUTTON_3] = get_mouse_button(player->mouse_button_3);
+			m_buttons[CELL_MOUSE_BUTTON_4] = get_mouse_button(player->mouse_button_4);
+			m_buttons[CELL_MOUSE_BUTTON_5] = get_mouse_button(player->mouse_button_5);
+			m_buttons[CELL_MOUSE_BUTTON_6] = get_mouse_button(player->mouse_button_6);
+			m_buttons[CELL_MOUSE_BUTTON_7] = get_mouse_button(player->mouse_button_7);
+			m_buttons[CELL_MOUSE_BUTTON_8] = get_mouse_button(player->mouse_button_8);
 		}
 	}
 }
 
 raw_mouse::~raw_mouse()
 {
+}
+
+std::pair<int, int> raw_mouse::get_mouse_button(const cfg::string& button)
+{
+	const std::string value = button.to_string();
+
+#ifdef _WIN32
+	static const std::unordered_map<int, std::pair<int, int>> btn_pairs
+	{
+		{ 0, {}},
+		{ RI_MOUSE_BUTTON_1_UP, { RI_MOUSE_BUTTON_1_DOWN, RI_MOUSE_BUTTON_1_UP }},
+		{ RI_MOUSE_BUTTON_2_UP, { RI_MOUSE_BUTTON_2_DOWN, RI_MOUSE_BUTTON_2_UP }},
+		{ RI_MOUSE_BUTTON_3_UP, { RI_MOUSE_BUTTON_3_DOWN, RI_MOUSE_BUTTON_3_UP }},
+		{ RI_MOUSE_BUTTON_4_UP, { RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP }},
+		{ RI_MOUSE_BUTTON_5_UP, { RI_MOUSE_BUTTON_5_DOWN, RI_MOUSE_BUTTON_5_UP }},
+	};
+
+	if (const auto it = raw_mouse_button_map.find(value); it != raw_mouse_button_map.cend())
+	{
+		return ::at32(btn_pairs, it->second);
+	}
+#endif
+
+	return {};
 }
 
 void raw_mouse::update_window_handle()
@@ -83,43 +116,39 @@ void raw_mouse::update_values(const RAWMOUSE& state)
 	// Update window handle and size
 	update_window_handle();
 
-	// Check if the window handle is active
-	if (!m_window_handle)
+	const auto get_button_pressed = [this](u8 button, int button_flags)
 	{
-		return;
-	}
+		const auto& [down, up] = ::at32(m_buttons, button);
 
-	const auto get_button_pressed = [this](u8 button, int button_flags, int down, int up)
-	{
 		// Only update the value if either down or up flags are present
 		if ((button_flags & down))
 		{
 			m_handler->Button(m_index, button, true);
+			m_handler->mouse_press_callback(m_device_name, button, true);
 		}
 		else if ((button_flags & up))
 		{
 			m_handler->Button(m_index, button, false);
+			m_handler->mouse_press_callback(m_device_name, button, false);
 		}
 	};
 
 	// Get mouse buttons
-	get_button_pressed(CELL_MOUSE_BUTTON_1, state.usButtonFlags, RI_MOUSE_BUTTON_1_DOWN, RI_MOUSE_BUTTON_1_UP);
-	get_button_pressed(CELL_MOUSE_BUTTON_2, state.usButtonFlags, RI_MOUSE_BUTTON_2_DOWN, RI_MOUSE_BUTTON_2_UP);
-	get_button_pressed(CELL_MOUSE_BUTTON_3, state.usButtonFlags, RI_MOUSE_BUTTON_3_DOWN, RI_MOUSE_BUTTON_3_UP);
-	get_button_pressed(CELL_MOUSE_BUTTON_4, state.usButtonFlags, RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP);
-	get_button_pressed(CELL_MOUSE_BUTTON_5, state.usButtonFlags, RI_MOUSE_BUTTON_5_DOWN, RI_MOUSE_BUTTON_5_UP);
+	get_button_pressed(CELL_MOUSE_BUTTON_1, state.usButtonFlags);
+	get_button_pressed(CELL_MOUSE_BUTTON_2, state.usButtonFlags);
+	get_button_pressed(CELL_MOUSE_BUTTON_3, state.usButtonFlags);
+	get_button_pressed(CELL_MOUSE_BUTTON_4, state.usButtonFlags);
+	get_button_pressed(CELL_MOUSE_BUTTON_5, state.usButtonFlags);
 
-	// Get vertical mouse wheel
+	// Get mouse wheel
 	if ((state.usButtonFlags & RI_MOUSE_WHEEL))
 	{
-		m_handler->Scroll(m_index, static_cast<s16>(state.usButtonData));
+		m_handler->Scroll(m_index, 0, std::clamp(static_cast<s16>(state.usButtonData) / WHEEL_DELTA, -128, 127));
 	}
-
-	// Get horizontal mouse wheel. Ignored until needed.
-	//if ((state.usButtonFlags & RI_MOUSE_HWHEEL))
-	//{
-	//	m_handler->Scroll(m_index, static_cast<s16>(state.usButtonData));
-	//}
+	else if ((state.usButtonFlags & RI_MOUSE_HWHEEL))
+	{
+		m_handler->Scroll(m_index, std::clamp(static_cast<s16>(state.usButtonData) / WHEEL_DELTA, -128, 127), 0);
+	}
 
 	// Get mouse movement
 	if ((state.usFlags & MOUSE_MOVE_ABSOLUTE))
@@ -181,6 +210,12 @@ void raw_mouse::update_values(const RAWMOUSE& state)
 }
 #endif
 
+raw_mouse_handler::raw_mouse_handler(bool ignore_config)
+	: MouseHandlerBase()
+	, m_ignore_config(ignore_config)
+{
+}
+
 raw_mouse_handler::~raw_mouse_handler()
 {
 	if (m_raw_mice.empty())
@@ -220,7 +255,16 @@ void raw_mouse_handler::Init(const u32 max_connect)
 
 	m_mice.clear();
 
-	for (u32 i = 0; i < std::min(::size32(m_raw_mice), max_connect); i++)
+	// Get max device index
+	u32 now_connect = 0;
+	std::set<u32> connected_mice{};
+	for (const auto& [handle, mouse] : m_raw_mice)
+	{
+		now_connect = std::max(now_connect, mouse.index() + 1);
+		connected_mice.insert(mouse.index());
+	}
+
+	for (u32 i = 0; i < now_connect; i++)
 	{
 		m_mice.emplace_back(Mouse());
 	}
@@ -232,7 +276,7 @@ void raw_mouse_handler::Init(const u32 max_connect)
 
 	for (u32 i = 0; i < m_info.now_connect; i++)
 	{
-		m_info.status[i] = CELL_MOUSE_STATUS_CONNECTED;
+		m_info.status[i] = connected_mice.contains(i) ? CELL_MOUSE_STATUS_CONNECTED : CELL_MOUSE_STATUS_DISCONNECTED;
 		m_info.mode[i] = CELL_MOUSE_INFO_TABLET_MOUSE_MODE;
 		m_info.tablet_is_supported[i] = CELL_MOUSE_INFO_TABLET_NOT_SUPPORTED;
 		m_info.vendor_id[0] = 0x1234;
@@ -338,9 +382,24 @@ void raw_mouse_handler::enumerate_devices(u32 max_connect)
 
 		const std::string device_name = wchar_to_utf8(buf.data());
 
-		input_log.notice("raw_mouse_handler: adding device %d: '%s'", m_raw_mice.size(), device_name);
+		if (m_ignore_config)
+		{
+			input_log.notice("raw_mouse_handler: adding device %d: '%s'", m_raw_mice.size(), device_name);
+			m_raw_mice[device.hDevice] = raw_mouse(::size32(m_raw_mice), device_name, device.hDevice, this);
+			continue;
+		}
 
-		m_raw_mice[device.hDevice] = raw_mouse(::size32(m_raw_mice), device_name, device.hDevice, this);
+		for (u32 i = 0; i < std::min(max_connect, ::size32(g_cfg_raw_mouse.players)); i++)
+		{
+			const auto& player = ::at32(g_cfg_raw_mouse.players, i);
+
+			if (player && player->device.to_string() == device_name)
+			{
+				input_log.notice("raw_mouse_handler: adding device %d: '%s'", m_raw_mice.size(), device_name);
+				m_raw_mice[device.hDevice] = raw_mouse(i, device_name, device.hDevice, this);
+				break;
+			}
+		}
 	}
 #endif
 

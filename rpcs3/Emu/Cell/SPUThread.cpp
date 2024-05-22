@@ -3778,13 +3778,16 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 		if (raddr)
 		{
 			// Last check for event before we clear the reservation
-			if (raddr == addr)
+			if (~ch_events.load().events & SPU_EVENT_LR)
 			{
-				set_events(SPU_EVENT_LR);
-			}
-			else
-			{
-				get_events(SPU_EVENT_LR);
+				if (raddr == addr)
+				{
+					set_events(SPU_EVENT_LR);
+				}
+				else
+				{
+					get_events(SPU_EVENT_LR);
+				}
 			}
 		}
 
@@ -4183,6 +4186,15 @@ bool spu_thread::is_exec_code(u32 addr, std::span<const u8> ls_ptr, u32 base_add
 			}
 		}
 
+		if (type == spu_itype::STOPD && !had_conditional)
+		{
+			return !avoid_dead_code;
+		}
+
+		if (i != 0 && type == spu_itype::STOPD)
+		{
+			return true;
+		}
 		if (type & spu_itype::branch)
 		{
 			if (type == spu_itype::BR && op.rt && op.rt != 127u)
@@ -6589,7 +6601,7 @@ spu_thread::spu_prio_t spu_thread::priority_t::load() const
 	if (_this->get_type() != spu_type::threaded || !_this->group->has_scheduler_context)
 	{
 		spu_thread::spu_prio_t prio{};
-		prio.prio = smax;
+		prio.prio = s32{smax};
 		return prio;
 	}
 
