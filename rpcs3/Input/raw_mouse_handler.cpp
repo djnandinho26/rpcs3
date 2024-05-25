@@ -5,6 +5,7 @@
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/Io/interception.h"
 #include "Input/raw_mouse_config.h"
+#include "Utilities/Timer.h"
 
 #ifdef _WIN32
 #include <hidusage.h>
@@ -29,6 +30,8 @@ static inline void draw_overlay_cursor(u32 index, s32 x_pos, s32 y_pos, s32 x_ma
 LOG_CHANNEL(input_log, "Input");
 
 raw_mice_config g_cfg_raw_mouse;
+shared_mutex g_registered_handlers_mutex;
+u32 g_registered_handlers = 0;
 
 raw_mouse::raw_mouse(u32 index, const std::string& device_name, void* handle, raw_mouse_handler* handler)
 	: m_index(index), m_device_name(device_name), m_handle(handle), m_handler(handler)
@@ -210,31 +213,24 @@ void raw_mouse::update_values(const RAWMOUSE& state)
 }
 #endif
 
-raw_mouse_handler::raw_mouse_handler(bool ignore_config)
+raw_mouse_handler::raw_mouse_handler(bool is_for_gui)
 	: MouseHandlerBase()
-	, m_ignore_config(ignore_config)
+	, m_is_for_gui(is_for_gui)
 {
 }
 
 raw_mouse_handler::~raw_mouse_handler()
 {
-	if (m_raw_mice.empty())
+	if (m_thread)
 	{
-		return;
+		auto& thread = *m_thread;
+		thread = thread_state::aborting;
+		thread();
+		m_thread.reset();
 	}
 
 #ifdef _WIN32
-	std::vector<RAWINPUTDEVICE> raw_input_devices;
-	raw_input_devices.push_back(RAWINPUTDEVICE {
-		.usUsagePage = HID_USAGE_PAGE_GENERIC,
-		.usUsage = HID_USAGE_GENERIC_MOUSE,
-		.dwFlags = RIDEV_REMOVE,
-		.hwndTarget = nullptr
-	});
-	if (!RegisterRawInputDevices(raw_input_devices.data(), ::size32(raw_input_devices), sizeof(RAWINPUTDEVICE)))
-	{
-		input_log.error("raw_mouse_handler: RegisterRawInputDevices (destructor) failed: %s", fmt::win_error{GetLastError(), nullptr});
-	}
+	unregister_raw_input_devices();
 #endif
 }
 
@@ -251,30 +247,20 @@ void raw_mouse_handler::Init(const u32 max_connect)
 		input_log.notice("raw_mouse_handler: Could not load raw mouse config. Using defaults.");
 	}
 
-	enumerate_devices(max_connect);
-
 	m_mice.clear();
+	m_mice.resize(max_connect);
 
 	// Get max device index
-	u32 now_connect = 0;
 	std::set<u32> connected_mice{};
-	for (const auto& [handle, mouse] : m_raw_mice)
-	{
-		now_connect = std::max(now_connect, mouse.index() + 1);
-		connected_mice.insert(mouse.index());
-	}
+	const u32 now_connect = get_now_connect(connected_mice);
 
-	for (u32 i = 0; i < now_connect; i++)
-	{
-		m_mice.emplace_back(Mouse());
-	}
-
+	// Init mouse info
 	m_info = {};
 	m_info.max_connect = max_connect;
-	m_info.now_connect = std::min(::size32(m_mice), max_connect);
+	m_info.now_connect = std::min(now_connect, max_connect);
 	m_info.info = input::g_mice_intercepted ? CELL_MOUSE_INFO_INTERCEPTED : 0; // Ownership of mouse data: 0=Application, 1=System
 
-	for (u32 i = 0; i < m_info.now_connect; i++)
+	for (u32 i = 0; i < m_info.max_connect; i++)
 	{
 		m_info.status[i] = connected_mice.contains(i) ? CELL_MOUSE_STATUS_CONNECTED : CELL_MOUSE_STATUS_DISCONNECTED;
 		m_info.mode[i] = CELL_MOUSE_INFO_TABLET_MOUSE_MODE;
@@ -283,46 +269,208 @@ void raw_mouse_handler::Init(const u32 max_connect)
 		m_info.product_id[0] = 0x1234;
 	}
 
-#ifdef _WIN32
-	if (max_connect && !m_raw_mice.empty())
-	{
-		// Initialize and center all mice
-		for (auto& [handle, mouse] : m_raw_mice)
-		{
-			mouse.update_window_handle();
-			mouse.center_cursor();
-		}
-
-		// Get the window handle of the first mouse
-		raw_mouse& mouse = m_raw_mice.begin()->second;
-
-		std::vector<RAWINPUTDEVICE> raw_input_devices;
-		raw_input_devices.push_back(RAWINPUTDEVICE {
-			.usUsagePage = HID_USAGE_PAGE_GENERIC,
-			.usUsage = HID_USAGE_GENERIC_MOUSE,
-			.dwFlags = 0,
-			.hwndTarget = mouse.window_handle()
-		});
-		if (!RegisterRawInputDevices(raw_input_devices.data(), ::size32(raw_input_devices), sizeof(RAWINPUTDEVICE)))
-		{
-			input_log.error("raw_mouse_handler: RegisterRawInputDevices failed: %s", fmt::win_error{GetLastError(), nullptr});
-		}
-	}
-#endif
-
 	type = mouse_handler::raw;
+
+	if (m_is_for_gui)
+	{
+		// No need for a thread. We call update_devices manually.
+		return;
+	}
+
+	m_thread = std::make_unique<named_thread<std::function<void()>>>("Raw Mouse Thread", [this]()
+	{
+		input_log.notice("raw_mouse_handler: thread started");
+
+		while (thread_ctrl::state() != thread_state::aborting)
+		{
+			update_devices();
+
+			thread_ctrl::wait_for(1'000'000);
+		}
+
+		input_log.notice("raw_mouse_handler: thread stopped");
+	});
 }
 
-void raw_mouse_handler::enumerate_devices(u32 max_connect)
+void raw_mouse_handler::update_devices()
 {
-	input_log.notice("raw_mouse_handler: enumerating devices (max_connect=%d)", max_connect);
+	u32 max_connect;
+	{
+		std::lock_guard lock(mutex);
+		max_connect = m_info.max_connect;
+	}
 
-	m_raw_mice.clear();
+	{
+		std::map<void*, raw_mouse> enumerated = enumerate_devices(max_connect);
 
-	if (max_connect == 0)
+		std::lock_guard lock(m_raw_mutex);
+
+		if (m_is_for_gui)
+		{
+			// Use the new devices
+			m_raw_mice = std::move(enumerated);
+		}
+		else
+		{
+			// Integrate the new devices
+			std::map<void*, raw_mouse> updated_mice;
+
+			for (u32 i = 0; i < std::min(max_connect, ::size32(g_cfg_raw_mouse.players)); i++)
+			{
+				const auto& player = ::at32(g_cfg_raw_mouse.players, i);
+				const std::string device_name = player->device.to_string();
+
+				// Check if the configured device for this player is connected
+				if (auto it = std::find_if(enumerated.begin(), enumerated.end(), [&device_name](const auto& entry){ return entry.second.device_name() == device_name; });
+					it != enumerated.end())
+				{
+					// Check if the device was already known
+					auto it_exists = m_raw_mice.find(it->first);
+					const bool exists = it_exists != m_raw_mice.end();
+
+					// Copy by value to allow for the same device for multiple players
+					raw_mouse& mouse = updated_mice[it->first];
+					mouse = exists ? it_exists->second : it->second;
+					mouse.set_index(i);
+
+					if (!exists)
+					{
+						// Initialize and center mouse
+						mouse.update_window_handle();
+						mouse.center_cursor();
+
+						input_log.notice("raw_mouse_handler: added new device for player %d: '%s'", i, device_name);
+					}
+				}
+			}
+
+			// Log disconnected devices
+			for (const auto& [handle, mouse] : m_raw_mice)
+			{
+				if (!updated_mice.contains(handle))
+				{
+					input_log.notice("raw_mouse_handler: removed device for player %d: '%s'", mouse.index(), mouse.device_name());
+				}
+			}
+
+			m_raw_mice = std::move(updated_mice);
+		}
+	}
+
+	// Update mouse info
+	std::set<u32> connected_mice{};
+	const u32 now_connect = get_now_connect(connected_mice);
+	{
+		std::lock_guard lock(mutex);
+
+		m_info.now_connect = std::min(now_connect, m_info.max_connect);
+
+		for (u32 i = 0; i < m_info.max_connect; i++)
+		{
+			m_info.status[i] = connected_mice.contains(i) ? CELL_MOUSE_STATUS_CONNECTED : CELL_MOUSE_STATUS_DISCONNECTED;
+		}
+	}
+
+#ifdef _WIN32
+	register_raw_input_devices();
+#endif
+}
+
+#ifdef _WIN32
+void raw_mouse_handler::register_raw_input_devices()
+{
+	std::lock_guard lock(m_raw_mutex);
+
+	if (m_registered_raw_input_devices || !m_info.max_connect || m_raw_mice.empty())
 	{
 		return;
 	}
+
+	// Get the window handle of the first mouse
+	raw_mouse& mouse = m_raw_mice.begin()->second;
+
+	std::vector<RAWINPUTDEVICE> raw_input_devices;
+	raw_input_devices.push_back(RAWINPUTDEVICE {
+		.usUsagePage = HID_USAGE_PAGE_GENERIC,
+		.usUsage = HID_USAGE_GENERIC_MOUSE,
+		.dwFlags = 0,
+		.hwndTarget = mouse.window_handle()
+	});
+
+	{
+		std::lock_guard lock(g_registered_handlers_mutex);
+
+		if (!RegisterRawInputDevices(raw_input_devices.data(), ::size32(raw_input_devices), sizeof(RAWINPUTDEVICE)))
+		{
+			input_log.error("raw_mouse_handler: RegisterRawInputDevices failed: %s", fmt::win_error{GetLastError(), nullptr});
+			return;
+		}
+
+		g_registered_handlers++;
+	}
+
+	m_registered_raw_input_devices = true;
+}
+
+void raw_mouse_handler::unregister_raw_input_devices()
+{
+	if (!m_registered_raw_input_devices)
+	{
+		return;
+	}
+
+	std::lock_guard lock(g_registered_handlers_mutex);
+
+	if (!g_registered_handlers || (--g_registered_handlers > 0))
+	{
+		input_log.notice("raw_mouse_handler: Skip unregistering devices. %d other handlers are still registered.", g_registered_handlers);
+		return;
+	}
+
+	input_log.notice("raw_mouse_handler: Unregistering devices");
+
+	std::vector<RAWINPUTDEVICE> raw_input_devices;
+	raw_input_devices.push_back(RAWINPUTDEVICE {
+		.usUsagePage = HID_USAGE_PAGE_GENERIC,
+		.usUsage = HID_USAGE_GENERIC_MOUSE,
+		.dwFlags = RIDEV_REMOVE,
+		.hwndTarget = nullptr
+	});
+	if (!RegisterRawInputDevices(raw_input_devices.data(), ::size32(raw_input_devices), sizeof(RAWINPUTDEVICE)))
+	{
+		input_log.error("raw_mouse_handler: RegisterRawInputDevices (unregister) failed: %s", fmt::win_error{GetLastError(), nullptr});
+	}
+}
+#endif
+
+u32 raw_mouse_handler::get_now_connect(std::set<u32>& connected_mice)
+{
+	u32 now_connect = 0;
+	connected_mice.clear();
+	{
+		std::lock_guard lock(m_raw_mutex);
+
+		for (const auto& [handle, mouse] : m_raw_mice)
+		{
+			now_connect = std::max(now_connect, mouse.index() + 1);
+			connected_mice.insert(mouse.index());
+		}
+	}
+	return now_connect;
+}
+
+std::map<void*, raw_mouse> raw_mouse_handler::enumerate_devices(u32 max_connect)
+{
+	input_log.trace("raw_mouse_handler: enumerating devices (max_connect=%d)", max_connect);
+
+	std::map<void*, raw_mouse> raw_mice;
+
+	if (max_connect == 0)
+	{
+		return raw_mice;
+	}
+
+	Timer timer{};
 
 #ifdef _WIN32
 	u32 num_devices{};
@@ -330,12 +478,12 @@ void raw_mouse_handler::enumerate_devices(u32 max_connect)
 	if (res == umax)
 	{
 		input_log.error("raw_mouse_handler: GetRawInputDeviceList (count) failed: %s", fmt::win_error{GetLastError(), nullptr});
-		return;
+		return raw_mice;
 	}
 
 	if (num_devices == 0)
 	{
-		return;
+		return raw_mice;
 	}
 
 	std::vector<RAWINPUTDEVICELIST> device_list(num_devices);
@@ -344,16 +492,11 @@ void raw_mouse_handler::enumerate_devices(u32 max_connect)
 	if (res == umax)
 	{
 		input_log.error("raw_mouse_handler: GetRawInputDeviceList (fetch) failed: %s", fmt::win_error{GetLastError(), nullptr});
-		return;
+		return raw_mice;
 	}
 
 	for (RAWINPUTDEVICELIST& device : device_list)
 	{
-		if (m_raw_mice.size() >= max_connect)
-		{
-			return;
-		}
-
 		if (device.dwType != RIM_TYPEMOUSE)
 		{
 			continue;
@@ -381,29 +524,14 @@ void raw_mouse_handler::enumerate_devices(u32 max_connect)
 		}
 
 		const std::string device_name = wchar_to_utf8(buf.data());
+		input_log.trace("raw_mouse_handler: found device: '%s'", device_name);
 
-		if (m_ignore_config)
-		{
-			input_log.notice("raw_mouse_handler: adding device %d: '%s'", m_raw_mice.size(), device_name);
-			m_raw_mice[device.hDevice] = raw_mouse(::size32(m_raw_mice), device_name, device.hDevice, this);
-			continue;
-		}
-
-		for (u32 i = 0; i < std::min(max_connect, ::size32(g_cfg_raw_mouse.players)); i++)
-		{
-			const auto& player = ::at32(g_cfg_raw_mouse.players, i);
-
-			if (player && player->device.to_string() == device_name)
-			{
-				input_log.notice("raw_mouse_handler: adding device %d: '%s'", m_raw_mice.size(), device_name);
-				m_raw_mice[device.hDevice] = raw_mouse(i, device_name, device.hDevice, this);
-				break;
-			}
-		}
+		raw_mice[device.hDevice] = raw_mouse(::size32(raw_mice), device_name, device.hDevice, this);
 	}
 #endif
 
-	input_log.notice("raw_mouse_handler: found %d devices", m_raw_mice.size());
+	input_log.trace("raw_mouse_handler: found %d devices in %f ms", raw_mice.size(), timer.GetElapsedTimeInMilliSec());
+	return raw_mice;
 }
 
 #ifdef _WIN32
@@ -432,6 +560,8 @@ void raw_mouse_handler::handle_native_event(const MSG& msg)
 	{
 	case RIM_TYPEMOUSE:
 	{
+		std::lock_guard lock(m_raw_mutex);
+
 		if (auto it = m_raw_mice.find(raw_input.header.hDevice); it != m_raw_mice.end())
 		{
 			it->second.update_values(raw_input.data.mouse);
