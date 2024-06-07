@@ -3266,6 +3266,8 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 			}
 			else
 			{
+				m_targets[pos].push_back(target);
+
 				if (g_cfg.core.spu_block_size == spu_block_size_type::giga)
 				{
 					spu_log.notice("[0x%x] At 0x%x: ignoring fixed tail call to 0x%x (SYNC)", entry_point, pos, target);
@@ -5086,7 +5088,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 				std::vector<u32> to_pop;
 
 				usz stackframe_it = wi;
-				usz stackframe_pc = SPU_LS_SIZE;
+				u32 stackframe_pc = SPU_LS_SIZE;
 				usz entry_index = umax;
 
 				auto get_block_targets = [&](u32 pc) -> std::basic_string_view<u32>
@@ -5565,11 +5567,6 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 		}
 
 		case spu_itype::IRET:
-		{
-			next_block();
-			break;
-		}
-
 		case spu_itype::BI:
 		case spu_itype::BISL:
 		case spu_itype::BISLED:
@@ -5578,7 +5575,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 		case spu_itype::BIHZ:
 		case spu_itype::BIHNZ:
 		{
-			if (op.e)
+			if (op.e || op.d)
 			{
 				break_putllc16(27, atomic16.discard());
 			}
@@ -5665,14 +5662,16 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 					{
 					case MFC_GETLLAR_CMD:
 					{
+						auto lsa = get_reg(s_reg_mfc_lsa);
+						inherit_const_mask_value(s_reg_mfc_lsa, lsa, 0, ~SPU_LS_MASK_128);
+						lsa = get_reg(s_reg_mfc_lsa);
 						const u32 lsa_pc = atomic16.lsa_last_pc == SPU_LS_SIZE ? bpc : atomic16.lsa_last_pc;
 
 						if (atomic16.active)
 						{
-							if (atomic16.lsa_pc != lsa_pc || atomic16.get_pc != pos)
+							if (atomic16.lsa_pc != lsa_pc || atomic16.get_pc != pos || atomic16.lsa != lsa)
 							{
 								break_putllc16(30, atomic16.discard());
-								break;
 							}
 						}
 
@@ -5681,9 +5680,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 						atomic16.get_pc = pos;
 						atomic16.active = true;
 
-						const auto lsa = get_reg(s_reg_mfc_lsa);
-						inherit_const_mask_value(s_reg_mfc_lsa, lsa, 0, ~SPU_LS_MASK_128);
-						atomic16.lsa = get_reg(s_reg_mfc_lsa);
+						atomic16.lsa = lsa;
 
 						if (likely_putllc_loop)
 						{
