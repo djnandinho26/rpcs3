@@ -301,16 +301,18 @@ static void fixup_settings(const psf::registry* _psf)
 	}
 }
 
-void dump_executable(std::span<const u8> data, main_ppu_module* _main, std::string_view title_id)
+extern void dump_executable(std::span<const u8> data, ppu_module* _module, std::string_view title_id)
 {
+	const std::string_view filename = _module->path.substr(_module->path.find_last_of('/') + 1);
+
 	// Format filename and directory name
 	// Make each directory for each file so tools like IDA can work on it cleanly
-	const std::string dir_path = fs::get_cache_dir() + "ppu_progs/" + std::string{!title_id.empty() ? title_id : "untitled"} + fmt::format("-%s-%s", fmt::base57(_main->sha1), _main->path.substr(_main->path.find_last_of('/') + 1))  + '/';
-	const std::string filename = dir_path + "exec.elf";
+	const std::string dir_path = fs::get_cache_dir() + "ppu_progs/" + std::string{!title_id.empty() ? title_id : "untitled"} + fmt::format("-%s-%s", fmt::base57(_module->sha1), filename)  + '/';
+	const std::string file_path = dir_path + (fmt::to_lower(filename).ends_with(".prx") || fmt::to_lower(filename).ends_with(".sprx") ? "prog.prx" : "exec.elf");
 
 	if (fs::create_dir(dir_path) || fs::g_tls_error == fs::error::exist)
 	{
-		if (fs::file out{filename, fs::create + fs::write})
+		if (fs::file out{file_path, fs::create + fs::write})
 		{
 			if (out.size() == data.size())
 			{
@@ -1679,7 +1681,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 			{
 				if (auto& _main = *ensure(g_fxo->try_get<main_ppu_module>()); !_main.path.empty())
 				{
-					if (!_main.analyse(0, _main.elf_entry, _main.seg0_code_end, _main.applied_patches, [](){ return Emu.IsStopped(); }))
+					if (!_main.analyse(0, _main.elf_entry, _main.seg0_code_end, _main.applied_patches, std::vector<u32>{}, [](){ return Emu.IsStopped(); }))
 					{
 						return;
 					}
