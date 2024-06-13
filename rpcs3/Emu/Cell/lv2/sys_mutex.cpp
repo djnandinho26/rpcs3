@@ -255,6 +255,13 @@ error_code sys_mutex_lock(ppu_thread& ppu, u32 mutex_id, u64 timeout)
 					continue;
 				}
 
+				if (!atomic_storage<ppu_thread*>::load(mutex->control.raw().sq))
+				{
+					// Waiters queue is empty, so the thread must have been signaled
+					mutex->mutex.lock_unlock();
+					break;
+				}
+
 				std::lock_guard lock(mutex->mutex);
 
 				bool success = false;
