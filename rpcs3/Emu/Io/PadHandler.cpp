@@ -192,61 +192,6 @@ std::tuple<u16, u16> PadHandlerBase::ConvertToSquirclePoint(u16 inX, u16 inY, u3
 	return std::tuple<u16, u16>(newX, newY);
 }
 
-std::string PadHandlerBase::name_string() const
-{
-	return m_name_string;
-}
-
-usz PadHandlerBase::max_devices() const
-{
-	return m_max_devices;
-}
-
-bool PadHandlerBase::has_config() const
-{
-	return b_has_config;
-}
-
-bool PadHandlerBase::has_rumble() const
-{
-	return b_has_rumble;
-}
-
-bool PadHandlerBase::has_motion() const
-{
-	return b_has_motion;
-}
-
-bool PadHandlerBase::has_deadzones() const
-{
-	return b_has_deadzones;
-}
-
-bool PadHandlerBase::has_led() const
-{
-	return b_has_led;
-}
-
-bool PadHandlerBase::has_rgb() const
-{
-	return b_has_rgb;
-}
-
-bool PadHandlerBase::has_player_led() const
-{
-	return b_has_player_led;
-}
-
-bool PadHandlerBase::has_battery() const
-{
-	return b_has_battery;
-}
-
-bool PadHandlerBase::has_pressure_intensity_button() const
-{
-	return b_has_pressure_intensity_button;
-}
-
 void PadHandlerBase::init_configs()
 {
 	for (u32 i = 0; i < MAX_GAMEPADS; i++)
@@ -377,7 +322,7 @@ void PadHandlerBase::get_motion_sensors(const std::string& pad_id, const motion_
 	}
 
 	// Get the current motion values
-	std::shared_ptr<Pad> pad = std::make_shared<Pad>(m_type, 0, 0, 0);
+	std::shared_ptr<Pad> pad = std::make_shared<Pad>(m_type, 0, 0, 0, 0);
 	pad->m_sensors.resize(preview_values.size(), AnalogSensor(0, 0, 0, 0, 0));
 	pad_ensemble binding{pad, device, nullptr};
 	get_extended_info(binding);
@@ -437,14 +382,14 @@ void PadHandlerBase::TranslateButtonPress(const std::shared_ptr<PadDevice>& devi
 	}
 }
 
-bool PadHandlerBase::bindPadToDevice(std::shared_ptr<Pad> pad, u8 player_id)
+bool PadHandlerBase::bindPadToDevice(std::shared_ptr<Pad> pad)
 {
-	if (!pad || player_id >= g_cfg_input.player.size())
+	if (!pad || pad->m_player_id >= g_cfg_input.player.size())
 	{
 		return false;
 	}
 
-	const cfg_player* player_config = g_cfg_input.player[player_id];
+	const cfg_player* player_config = g_cfg_input.player[pad->m_player_id];
 	if (!player_config)
 	{
 		return false;
@@ -457,9 +402,9 @@ bool PadHandlerBase::bindPadToDevice(std::shared_ptr<Pad> pad, u8 player_id)
 		return false;
 	}
 
-	m_pad_configs[player_id].from_string(player_config->config.to_string());
-	pad_device->config = &m_pad_configs[player_id];
-	pad_device->player_id = player_id;
+	m_pad_configs[pad->m_player_id].from_string(player_config->config.to_string());
+	pad_device->config = &m_pad_configs[pad->m_player_id];
+	pad_device->player_id = pad->m_player_id;
 	cfg_pad* config = pad_device->config;
 	if (config == nullptr)
 	{
@@ -613,7 +558,7 @@ void PadHandlerBase::get_mapping(const pad_ensemble& binding)
 
 	// Find out if special buttons are pressed (introduced by RPCS3).
 	// These buttons will have a delay of one cycle, but whatever.
-	const bool adjust_pressure = pad->get_pressure_intensity_button_active(cfg->pressure_intensity_toggle_mode.get());
+	const bool adjust_pressure = pad->get_pressure_intensity_button_active(cfg->pressure_intensity_toggle_mode.get(), pad->m_player_id);
 	const u32 pressure_intensity_deadzone = cfg->pressure_intensity_deadzone.get();
 
 	// Translate any corresponding keycodes to our normal DS3 buttons and triggers
