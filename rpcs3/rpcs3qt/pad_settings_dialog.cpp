@@ -182,6 +182,9 @@ pad_settings_dialog::pad_settings_dialog(std::shared_ptr<gui_settings> gui_setti
 	ui->chooseClass->addItem(tr("PS Move Navigation"), u32{CELL_PAD_PCLASS_TYPE_NAVIGATION});
 	ui->chooseClass->addItem(tr("Skateboard"),         u32{CELL_PAD_PCLASS_TYPE_SKATEBOARD});
 	ui->chooseClass->addItem(tr("GunCon 3"),           u32{CELL_PAD_FAKE_TYPE_GUNCON3});
+	ui->chooseClass->addItem(tr("Top Shot Elite"),     u32{CELL_PAD_FAKE_TYPE_TOP_SHOT_ELITE});
+	ui->chooseClass->addItem(tr("Top Shot Fearmaster"),u32{CELL_PAD_FAKE_TYPE_TOP_SHOT_FEARMASTER});
+	ui->chooseClass->addItem(tr("uDraw GameTablet"),   u32{CELL_PAD_FAKE_TYPE_GAMETABLET});
 
 	connect(ui->chooseClass, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index)
 	{
@@ -1722,6 +1725,21 @@ void pad_settings_dialog::HandleDeviceClassChange(u32 class_id) const
 		case input::product_type::guncon_3:
 		{
 			ui->chooseProduct->addItem(tr("GunCon 3", "GunCon 3 Controller"), static_cast<int>(product.type));
+			break;
+		}
+		case input::product_type::top_shot_elite:
+		{
+			ui->chooseProduct->addItem(tr("Top Shot Elite", "Top Shot Elite Controller"), static_cast<int>(product.type));
+			break;
+		}
+		case input::product_type::top_shot_fearmaster:
+		{
+			ui->chooseProduct->addItem(tr("Top Shot Fearmaster", "Top Shot Fearmaster Controller"), static_cast<int>(product.type));
+			break;
+		}
+		case input::product_type::udraw_gametablet:
+		{
+			ui->chooseProduct->addItem(tr("uDraw GameTablet", "uDraw GameTablet Controller"), static_cast<int>(product.type));
 			break;
 		}
 		}
