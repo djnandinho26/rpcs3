@@ -479,6 +479,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		};
 
 		const int saved_index = ui->resBox->currentIndex();
+		bool remove_720p = false;
 
 		for (int i = ui->resBox->count() - 1; i >= 0; i--)
 		{
@@ -489,18 +490,36 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 			const bool is_interlaced = (resolution == video_resolution::_1080i ||
 			                            resolution == video_resolution::_480i ||
 			                            resolution == video_resolution::_576i);
-			const bool supported_by_game = !game || (game && game->resolution > 0 && resolutions.contains(resolution) && (game->resolution & resolutions.at(resolution)));
+			const bool supported_by_game = !game || !game->resolution || (resolutions.contains(resolution) && (game->resolution & resolutions.at(resolution)));
 
 			if (!supported_by_game || is_interlaced)
 			{
+				// Don't remove 720p yet. We may need it as fallback if no other resolution is supported.
+				if (resolution == video_resolution::_720p)
+				{
+					remove_720p = true;
+					continue;
+				}
+
 				ui->resBox->removeItem(i);
+
 				if (i == saved_index)
 				{
 					saved_index_removed = true;
 				}
 			}
 		}
+
+		// Remove 720p if unsupported unless it's the only option
+		if (remove_720p && ui->resBox->count() > 1)
+		{
+			if (const int index = find_item(ui->resBox, static_cast<int>(video_resolution::_720p)); index >= 0)
+			{
+				ui->resBox->removeItem(index);
+			}
+		}
 	}
+
 	for (int i = 0; i < ui->resBox->count(); i++)
 	{
 		const auto [text, value] = get_data(ui->resBox, i);
@@ -508,7 +527,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		if (static_cast<video_resolution>(value) == video_resolution::_720p)
 		{
 			// Rename the default resolution for users
-			ui->resBox->setItemText(i, tr("1280x720 (Recommended)", "Resolution"));
+			ui->resBox->setItemText(i, tr("720p (Recommended)", "Resolution"));
 
 			// Set the current selection to the default if the original setting wasn't valid
 			if (saved_index_removed)
@@ -588,14 +607,10 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 
 		switch (static_cast<zcull_precision_level>(ui->zcullPrecisionMode->itemData(index).toInt()))
 		{
-		case zcull_precision_level::precise:
-			precise = true; break;
-		case zcull_precision_level::approximate:
-			break;
-		case zcull_precision_level::relaxed:
-			relaxed = true; break;
-		default:
-			fmt::throw_exception("Unexpected selection");
+		case zcull_precision_level::precise: precise = true; break;
+		case zcull_precision_level::approximate: break;
+		case zcull_precision_level::relaxed: relaxed = true; break;
+		default: fmt::throw_exception("Unexpected selection");
 		}
 
 		m_emu_settings->SetSetting(emu_settings_type::RelaxedZCULL, relaxed ? "true" : "false");
@@ -609,6 +624,21 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	// 3D
 	m_emu_settings->EnhanceComboBox(ui->stereoRenderMode, emu_settings_type::StereoRenderMode);
 	SubscribeTooltip(ui->gb_stereo, tooltips.settings.stereo_render_mode);
+	if (game)
+	{
+		const auto on_resolution = [this](int index)
+		{
+			const auto [text, value] = get_data(ui->resBox, index);
+			ui->stereoRenderMode->setEnabled(value == static_cast<int>(video_resolution::_720p));
+		};
+		connect(ui->resBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, on_resolution);
+		on_resolution(ui->resBox->currentIndex());
+	}
+	else
+	{
+		ui->stereoRenderMode->setCurrentIndex(find_item(ui->stereoRenderMode, static_cast<int>(g_cfg.video.stereo_render_mode.def)));
+		ui->stereoRenderMode->setEnabled(false);
+	}
 
 	// Checkboxes: main options
 	m_emu_settings->EnhanceCheckBox(ui->dumpColor, emu_settings_type::WriteColorBuffers);
