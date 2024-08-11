@@ -2276,6 +2276,18 @@
               </widget>
              </item>
              <item>
+              <widget class="QGroupBox" name="gb_psnCountryBox">
+                <property name="title">
+                 <string>Country</string>
+                </property>
+                <layout class="QVBoxLayout" name="gb_psnCountryBox_layout">
+                  <item>
+                   <widget class="QComboBox" name="psnCountryBox"/>
+                  </item>
+                </layout>
+               </widget>
+              </item>
+              <item>
               <spacer name="networkTabSpacerRight">
                <property name="orientation">
                 <enum>Qt::Vertical</enum>
@@ -2964,6 +2976,13 @@
                 <widget class="QCheckBox" name="showShaderCompilationHint">
                  <property name="text">
                   <string>Show shader compilation hint</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QCheckBox" name="showAnalogLimiterToggleHint">
+                 <property name="text">
+                  <string>Show analog limiter toggle hint</string>
                  </property>
                 </widget>
                </item>

@@ -106,6 +106,7 @@ protected:
 		skateboard_tilt_right,
 
 		pressure_intensity_button,
+		analog_limiter_button,
 
 		button_count
 	};
@@ -131,6 +132,8 @@ protected:
 	bool b_has_motion = false;
 	bool b_has_config = false;
 	bool b_has_pressure_intensity_button = true;
+	bool b_has_analog_limiter_button = true;
+
 	std::array<cfg_pad, MAX_GAMEPADS> m_pad_configs;
 	std::vector<pad_ensemble> m_bindings;
 	std::unordered_map<u32, std::string> button_list;
@@ -253,6 +256,14 @@ public:
 	pad_handler m_type;
 	bool m_is_init = false;
 
+	enum class gui_call_type
+	{
+		normal,
+		get_connection,
+		reset_input,
+		blacklist
+	};
+
 	std::vector<pad_ensemble>& bindings() { return m_bindings; }
 	std::string name_string() const { return m_name_string; }
 	usz max_devices() const { return m_max_devices; }
@@ -266,6 +277,7 @@ public:
 	bool has_battery() const { return b_has_battery; }
 	bool has_battery_led() const { return b_has_battery_led; }
 	bool has_pressure_intensity_button() const { return b_has_pressure_intensity_button; }
+	bool has_analog_limiter_button() const { return b_has_analog_limiter_button; }
 
 	u16 NormalizeStickInput(u16 raw_value, s32 threshold, s32 multiplier, bool ignore_threshold = false) const;
 	void convert_stick_values(u16& x_out, u16& y_out, s32 x_in, s32 y_in, u32 deadzone, u32 anti_deadzone, u32 padsquircling) const;
@@ -283,7 +295,7 @@ public:
 	// Binds a Pad to a device
 	virtual bool bindPadToDevice(std::shared_ptr<Pad> pad);
 	virtual void init_config(cfg_pad* cfg) = 0;
-	virtual connection get_next_button_press(const std::string& padId, const pad_callback& callback, const pad_fail_callback& fail_callback, bool first_call, bool get_blacklist, const std::vector<std::string>& buttons);
+	virtual connection get_next_button_press(const std::string& padId, const pad_callback& callback, const pad_fail_callback& fail_callback, gui_call_type call_type, const std::vector<std::string>& buttons);
 	virtual void get_motion_sensors(const std::string& pad_id, const motion_callback& callback, const motion_fail_callback& fail_callback, motion_preview_values preview_values, const std::array<AnalogSensor, 4>& sensors);
 	virtual std::unordered_map<u32, std::string> get_motion_axis_list() const { return {}; }
 
@@ -303,7 +315,7 @@ private:
 protected:
 	virtual std::array<std::set<u32>, PadHandlerBase::button::button_count> get_mapped_key_codes(const std::shared_ptr<PadDevice>& device, const cfg_pad* cfg);
 	virtual void get_mapping(const pad_ensemble& binding);
-	void TranslateButtonPress(const std::shared_ptr<PadDevice>& device, u64 keyCode, bool& pressed, u16& val, bool ignore_stick_threshold = false, bool ignore_trigger_threshold = false);
+	void TranslateButtonPress(const std::shared_ptr<PadDevice>& device, u64 keyCode, bool& pressed, u16& val, bool use_stick_multipliers, bool ignore_stick_threshold = false, bool ignore_trigger_threshold = false);
 	void init_configs();
 	cfg_pad* get_config(const std::string& pad_id);
 };
