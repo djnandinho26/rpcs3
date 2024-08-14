@@ -883,7 +883,7 @@ void pad_settings_dialog::keyPressEvent(QKeyEvent *keyEvent)
 	}
 	else
 	{
-		m_cfg_entries[m_button_id].insert_key(keyboard_pad_handler::GetKeyName(keyEvent), m_enable_multi_binding);
+		m_cfg_entries[m_button_id].insert_key(keyboard_pad_handler::GetKeyName(keyEvent, false), m_enable_multi_binding);
 	}
 
 	ReactivateButtons();
@@ -1310,6 +1310,9 @@ void pad_settings_dialog::OnPadButtonClicked(int id)
 	{
 		m_enable_multi_binding = true;
 	}
+
+	// On alt+click or alt+space allow to handle triggers as the entire stick axis
+	m_handler->set_triggers_as_sticks_only(QApplication::keyboardModifiers() & Qt::KeyboardModifier::AltModifier);
 
 	for (auto but : m_pad_buttons->buttons())
 	{
