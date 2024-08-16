@@ -11,6 +11,7 @@
 #include "util/asm.hpp"
 
 #include <charconv>
+#include <regex>
 
 LOG_CHANNEL(patch_log, "PAT");
 
@@ -330,6 +331,12 @@ bool patch_engine::load(patch_map& patches_map, const std::string& path, std::st
 							is_valid = false;
 							continue;
 						}
+						else if (serial.size() != 9 || !std::all_of(serial.begin(), serial.end(), [](char c) { return std::isalnum(c); }))
+						{
+							append_log_message(log_messages, fmt::format("Error: Serial '%s' invalid (patch: %s, key: %s, location: %s, file: %s)", serial, description, main_key, get_yaml_node_location(serial_node), path), &patch_log.error);
+							is_valid = false;
+							continue;
+						}
 
 						if (const auto yml_type = serial_node.second.Type(); yml_type != YAML::NodeType::Sequence)
 						{
@@ -344,10 +351,26 @@ bool patch_engine::load(patch_map& patches_map, const std::string& path, std::st
 						{
 							const std::string& app_version = version.Scalar();
 
+							static const std::regex app_ver_regexp("^([0-9]{2}\\.[0-9]{2})$");
+
+							if (app_version != patch_key::all && (app_version.size() != 5 || !std::regex_match(app_version, app_ver_regexp)))
+							{
+								append_log_message(log_messages, fmt::format("Error: Skipping invalid app version '%s' (title: %s, serial: %s, patch: %s, key: %s, location: %s, file: %s)", app_version, title, serial, description, main_key, get_yaml_node_location(serial_node), path), &patch_log.error);
+								is_valid = false;
+								continue;
+							}
+
+							if (app_versions.contains(app_version))
+							{
+								append_log_message(log_messages, fmt::format("Error: Skipping duplicate app version '%s' (title: %s, serial: %s, patch: %s, key: %s, location: %s, file: %s)", app_version, title, serial, description, main_key, get_yaml_node_location(serial_node), path), &patch_log.error);
+								is_valid = false;
+								continue;
+							}
+
 							// Get this patch's config values
 							const patch_config_values& config_values = patch_config[main_key].patch_info_map[description].titles[title][serial][app_version];
 
-							app_versions[version.Scalar()] = config_values;
+							app_versions[app_version] = config_values;
 						}
 
 						if (app_versions.empty())
@@ -357,7 +380,7 @@ bool patch_engine::load(patch_map& patches_map, const std::string& path, std::st
 						}
 						else
 						{
-							info.titles[title][serial] = app_versions;
+							info.titles[title][serial] = std::move(app_versions);
 						}
 					}
 				}
@@ -544,7 +567,7 @@ bool patch_engine::load(patch_map& patches_map, const std::string& path, std::st
 													}
 													else
 													{
-														config_value.allowed_values.push_back(new_allowed_value);
+														config_value.allowed_values.push_back(std::move(new_allowed_value));
 													}
 												}
 												else
@@ -627,7 +650,7 @@ bool patch_engine::load(patch_map& patches_map, const std::string& path, std::st
 			}
 
 			// Insert patch information
-			container.patch_info_map[description] = info;
+			container.patch_info_map[description] = std::move(info);
 		}
 	}
 
@@ -821,7 +844,7 @@ bool patch_engine::add_patch_data(YAML::Node node, patch_info& info, u32 modifie
 		return false;
 	}
 
-	info.data_list.emplace_back(p_data);
+	info.data_list.emplace_back(std::move(p_data));
 
 	return true;
 }
