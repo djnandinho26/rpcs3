@@ -17,7 +17,7 @@
 #include <span>
 
 #ifdef ARCH_ARM64
-#include "Emu/CPU/Backends/AArch64JIT.h"
+#include "Emu/CPU/Backends/AArch64/AArch64JIT.h"
 #endif
 
 using namespace llvm;
