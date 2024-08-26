@@ -4,8 +4,13 @@
 #include <thread>
 #include <map>
 
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
+
 namespace aarch64
 {
+#if !defined(__APPLE__)
     struct cpu_entry_t
     {
         u32 vendor;
@@ -194,4 +199,63 @@ namespace aarch64
         result += suffix;
         return result;
     }
+#else
+    static std::string sysctl_s(const std::string_view& variable_name)
+    {
+        // Determine required buffer size
+        size_t length = 0;
+        if (sysctlbyname(variable_name.data(), nullptr, &length, nullptr, 0) == -1)
+        {
+            return "";
+        }
+
+        // Allocate space for the variable.
+        std::vector<char> text(length + 1);
+        text[length] = 0;
+        if (sysctlbyname(variable_name.data(), text.data(), &length, nullptr, 0) == -1)
+        {
+            return "";
+        }
+
+        return text.data();
+    }
+
+    static u64 sysctl_u64(const std::string_view& variable_name)
+    {
+        u64 value = 0;
+        size_t data_len = sizeof(value);
+        if (sysctlbyname(variable_name.data(), &value, &data_len, nullptr, 0) == -1)
+        {
+            return umax;
+        }
+        return value;
+    }
+
+    // We can get the brand name from sysctl directly
+    // Once we have windows implemented, we should probably separate the different OS-dependent bits to avoid clutter
+    std::string get_cpu_brand()
+    {
+        const auto brand = sysctl_s("machdep.cpu.brand_string");
+        if (brand.empty())
+        {
+            return "Unidentified CPU";
+        }
+
+        // Parse extra core information (P and E cores)
+        if (sysctl_u64("hw.nperflevels") < 2)
+        {
+            return brand;
+        }
+
+        u64 pcores = sysctl_u64("hw.perflevel0.physicalcpu");
+        u64 ecores = sysctl_u64("hw.perflevel1.physicalcpu");
+
+        if (sysctl_s("hw.perflevel0.name") == "Efficiency")
+        {
+            std::swap(ecores, pcores);
+        }
+
+        return fmt::format("%s (%lluP+%lluE)", brand, pcores, ecores);
+    }
+#endif
 }
