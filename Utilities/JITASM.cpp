@@ -186,12 +186,7 @@ static u8* add_jit_memory(usz size, usz align)
 	{
 #ifndef CAN_OVERCOMMIT
 		// Commit more memory.
-		// NOTE: Calling memory commit in parallel on the same addresses can throw a permission error.
-		{
-			static std::mutex mcommit_lock;
-			std::lock_guard lock(mcommit_lock);
-			utils::memory_commit(pointer + olda, newa - olda, Prot);
-		}
+		utils::memory_commit(pointer + olda, newa - olda, Prot);
 #endif
 		// Acknowledge committed memory
 		Ctr.atomic_op([&](u64& ctr)
@@ -258,6 +253,11 @@ uchar* jit_runtime::_alloc(usz size, usz align) noexcept
 
 u8* jit_runtime::alloc(usz size, usz align, bool exec) noexcept
 {
+#if defined(__APPLE__)
+	static std::mutex s_alloc_lock;
+	std::lock_guard lock(s_alloc_lock);
+#endif
+
 	if (exec)
 	{
 		return add_jit_memory<s_code_pos, 0x0, utils::protection::wx>(size, align);
