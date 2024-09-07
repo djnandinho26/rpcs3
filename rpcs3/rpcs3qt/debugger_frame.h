@@ -54,6 +54,7 @@ class debugger_frame : public custom_dock_widget
 	QPushButton* m_btn_step;
 	QPushButton* m_btn_step_over;
 	QPushButton* m_btn_run;
+
 	QComboBox* m_choice_units;
 	QTimer* m_update;
 	QSplitter* m_splitter;
@@ -61,6 +62,7 @@ class debugger_frame : public custom_dock_widget
 	u64 m_threads_created = -1;
 	u64 m_threads_deleted = -1;
 	system_state m_emu_state{};
+	u64 m_emulation_id{};
 	u32 m_last_pc = -1;
 	std::vector<char> m_last_query_state;
 	std::string m_last_reg_state;
@@ -68,6 +70,7 @@ class debugger_frame : public custom_dock_widget
 	u32 m_last_step_over_breakpoint = -1;
 	u64 m_ui_update_ctr = 0;
 	u64 m_ui_fast_update_permission_deadline = 0;
+	bool m_thread_list_pending_update = false;
 
 	std::shared_ptr<CPUDisAsm> m_disasm; // Only shared to allow base/derived functionality
 	std::shared_ptr<cpu_thread> m_cpu;
