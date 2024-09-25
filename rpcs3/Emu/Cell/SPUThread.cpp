@@ -1823,17 +1823,32 @@ void spu_thread::cpu_task()
 		return fmt::format("%sSPU[0x%07x] Thread (%s) [0x%05x]", type >= spu_type::raw ? type == spu_type::isolated ? "Iso" : "Raw" : "", cpu->lv2_id, *name_cache.get(), cpu->pc);
 	};
 
-	if (!spurs_addr)
+	constexpr u32 invalid_spurs = 0u - 0x80;
+
+	if (spurs_addr == 0)
 	{
 		// Evaluate it
 		if (!group)
 		{
-			spurs_addr = -0x80; // Some invalid non-0 address
+			spurs_addr = invalid_spurs; // Some invalid non-0 address
 		}
 		else
 		{
 			const u32 arg = static_cast<u32>(group->args[index][1]);
-			spurs_addr = group->name.ends_with("CellSpursKernelGroup"sv) && vm::check_addr(arg) ? arg : 0u - 0x80;
+
+			if (group->name.ends_with("CellSpursKernelGroup"sv) && vm::check_addr(arg))
+			{
+				spurs_addr = arg;
+
+				if (group->max_run != group->max_num)
+				{
+					group->spurs_running++;
+				}
+			}
+			else
+			{
+				spurs_addr = invalid_spurs;
+			}
 		}
 	}
 
@@ -1883,6 +1898,14 @@ void spu_thread::cpu_task()
 		}
 
 		allow_interrupts_in_cpu_work = false;
+	}
+
+	if (spurs_addr != invalid_spurs && group->max_run != group->max_num)
+	{
+		if (group->spurs_running.exchange(0))
+		{
+			group->spurs_running.notify_all();
+		}
 	}
 }
 
@@ -4874,6 +4897,7 @@ bool spu_thread::process_mfc_cmd()
 		if (do_putllc(ch_mfc_cmd))
 		{
 			ch_atomic_stat.set_value(MFC_PUTLLC_SUCCESS);
+			spurs_waited = false;
 		}
 		else
 		{
@@ -5469,12 +5493,73 @@ s64 spu_thread::get_ch_value(u32 ch)
 
 	case SPU_RdEventStat:
 	{
+		const bool is_spurs_task_wait = pc == 0x11a8 && group->max_run != group->max_num && spurs_addr == raddr && !spurs_waited;
+
+		if (is_spurs_task_wait)
+		{
+			spurs_waited = true;
+
+			const u32 prev_running = group->spurs_running.fetch_op([](u32& x)
+			{
+				if (x)
+				{
+					x--;
+					return true;
+				}
+
+				return false;
+			}).first;
+
+			if (prev_running == group->max_run)
+			{
+				group->spurs_running.notify_all();
+			}
+		}
+
 		const u32 mask1 = ch_events.load().mask;
 
 		auto events = get_events(mask1, false, true);
 
+		const auto wait_spurs_task = [&]
+		{
+			if (is_spurs_task_wait)
+			{
+				// Wait for other threads to complete their tasks (temporarily)
+				if (!is_stopped())
+				{
+					const u32 prev_running = group->spurs_running.fetch_op([max = group->max_run](u32& x)
+					{
+						if (x < max)
+						{
+							x++;
+							return true;
+						}
+
+						return false;
+					}).first;
+
+					if (prev_running >= group->max_run)
+					{
+						const u64 before = get_system_time();
+						thread_ctrl::wait_on(group->spurs_running, prev_running, 10000);
+
+						// Check for missed waiting (due to thread-state notification or value change)
+						const u32 new_running = group->spurs_running;
+
+						if (!is_stopped() && new_running >= group->max_run && get_system_time() - before < 1500)
+						{
+							thread_ctrl::wait_on(group->spurs_running, new_running, 10000);
+						}
+
+						group->spurs_running++;
+					}
+				}
+			}
+		};
+
 		if (events.count)
 		{
+			wait_spurs_task();
 			return events.events & mask1;
 		}
 
@@ -5490,7 +5575,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 		const u32 old_raddr = raddr;
 
 		// Does not need to safe-access reservation if LR is the only event masked
-		// Because it's either an access violation or a livelock if an invalid memory is passed
+		// Because it's either an access violation or a live-lock if an invalid memory is passed
 		if (raddr && mask1 > SPU_EVENT_LR)
 		{
 			auto area = vm::get(vm::any, raddr);
@@ -5504,7 +5589,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 			}
 			else if (area)
 			{
-				// Ensure possesion over reservation memory so it won't be deallocated
+				// Ensure possession over reservation memory so it won't be de-allocated
 				auto [base_addr, shm_] = area->peek(raddr);
 
 				if (shm_)
@@ -5616,7 +5701,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 					static thread_local bool s_tls_try_notify = false;
 					s_tls_try_notify = false;
 
-					atomic_wait_engine::set_one_time_use_wait_callback(mask1 != SPU_EVENT_LR ? nullptr : +[](u64 attempts) -> bool
+					const auto wait_cb = mask1 != SPU_EVENT_LR ? nullptr : +[](u64 attempts) -> bool
 					{
 						const auto _this = static_cast<spu_thread*>(cpu_thread::get_current());
 						AUDIT(_this->get_class() == thread_class::spu);
@@ -5665,10 +5750,11 @@ s64 spu_thread::get_ch_value(u32 ch)
 						}
 
 						return true;
-					});
+					};
 
 					if (auto wait_var = vm::reservation_notifier_begin_wait(_raddr, rtime))
 					{
+						atomic_wait_engine::set_one_time_use_wait_callback(wait_cb);
 						utils::bless<atomic_t<u32>>(&wait_var->raw().wait_flag)->wait(1, atomic_wait_timeout{80'000});
 						vm::reservation_notifier_end_wait(*wait_var);
 					}
@@ -5690,6 +5776,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 			thread_ctrl::wait_on(state, old, 100);
 		}
 
+		wait_spurs_task();
 		wakeup_delay();
 
 		if (is_paused(state - cpu_flag::suspend))
