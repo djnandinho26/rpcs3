@@ -42,6 +42,8 @@ extern rsx::frame_capture_data frame_capture;
 
 namespace rsx
 {
+	class RSXDMAWriter;
+
 	struct context;
 
 	namespace overlays
@@ -211,6 +213,9 @@ namespace rsx
 
 		// Context
 		context* m_ctx = nullptr;
+
+		// Host DMA
+		std::unique_ptr<RSXDMAWriter> m_host_dma_ctrl;
 
 	public:
 		atomic_t<u64> new_get_put = u64{umax};
