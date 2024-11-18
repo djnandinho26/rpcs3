@@ -41,16 +41,16 @@ public:
 		{
 			if (index - i < N)
 			{
-				result = std::addressof(m_data[index - i]);
+				result = std::addressof(_this->m_data[index - i]);
 				break;
 			}
 
-			lf_array* next = m_next;
+			lf_array* next = _this->m_next;
 
 			if (!next)
 			{
-				// Do not allow access beyond one element more at a time 
-				ensure(!installed && index - i == N);
+				// Do not allow access beyond many element more at a time 
+				ensure(!installed && index - i < N * 2);
 
 				installed = true;
 
@@ -78,7 +78,7 @@ public:
 	{
 		lf_array* _this = this;
 
-		using return_t = decltype(func(std::declval<T&>()));
+		using return_t = std::invoke_result_t<F, T&>;
 
 		while (_this)
 		{
@@ -99,7 +99,7 @@ public:
 				}
 			}
 
-			lf_array* next = m_next;
+			lf_array* next = _this->m_next;
 
 			if constexpr (!std::is_void_v<return_t>)
 			{
