@@ -252,6 +252,7 @@ target_sources(rpcs3_emu PRIVATE
     Cell/Modules/cellCrossController.cpp
     Cell/Modules/cellDaisy.cpp
     Cell/Modules/cellDmux.cpp
+    Cell/Modules/cellDmuxPamf.cpp
     Cell/Modules/cellDtcpIpUtility.cpp
     Cell/Modules/cellFiber.cpp
     Cell/Modules/cellFont.cpp
@@ -522,6 +523,7 @@ target_sources(rpcs3_emu PRIVATE
     RSX/Overlays/HomeMenu/overlay_home_menu_message_box.cpp
     RSX/Overlays/HomeMenu/overlay_home_menu_page.cpp
     RSX/Overlays/HomeMenu/overlay_home_menu_settings.cpp
+    RSX/Overlays/HomeMenu/overlay_home_menu_savestate.cpp
     RSX/Overlays/Network/overlay_recvmessage_dialog.cpp
     RSX/Overlays/Network/overlay_sendmessage_dialog.cpp
     RSX/Overlays/overlays.cpp

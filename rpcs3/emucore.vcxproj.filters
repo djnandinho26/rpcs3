@@ -393,6 +393,9 @@
     <ClCompile Include="Emu\Cell\Modules\cellDmux.cpp">
       <Filter>Emu\Cell\Modules</Filter>
     </ClCompile>
+    <ClCompile Include="Emu\Cell\Modules\cellDmuxPamf.cpp">
+      <Filter>Emu\Cell\Modules</Filter>
+    </ClCompile>
     <ClCompile Include="Emu\Cell\Modules\cellDtcpIpUtility.cpp">
       <Filter>Emu\Cell\Modules</Filter>
     </ClCompile>
@@ -1174,6 +1177,9 @@
     <ClCompile Include="Emu\RSX\Overlays\HomeMenu\overlay_home_menu_settings.cpp">
       <Filter>Emu\GPU\RSX\Overlays\HomeMenu\Pages</Filter>
     </ClCompile>
+    <ClCompile Include="Emu\RSX\Overlays\HomeMenu\overlay_home_menu_savestate.cpp">
+      <Filter>Emu\GPU\RSX\Overlays\HomeMenu\Pages</Filter>
+    </ClCompile>
     <ClCompile Include="Emu\RSX\Overlays\overlay_animated_icon.cpp">
       <Filter>Emu\GPU\RSX\Overlays</Filter>
     </ClCompile>
@@ -1639,6 +1645,9 @@
       <Filter>Emu\Cell\Modules</Filter>
     </ClInclude>
     <ClInclude Include="Emu\Cell\Modules\cellDmux.h">
+      <Filter>Emu\Cell\Modules</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\Cell\Modules\cellDmuxPamf.h">
       <Filter>Emu\Cell\Modules</Filter>
     </ClInclude>
     <ClInclude Include="Emu\Cell\Modules\cellFiber.h">
@@ -2408,6 +2417,9 @@
       <Filter>Emu\GPU\RSX\Overlays\HomeMenu\Pages</Filter>
     </ClInclude>
     <ClInclude Include="Emu\RSX\Overlays\HomeMenu\overlay_home_menu_settings.h">
+      <Filter>Emu\GPU\RSX\Overlays\HomeMenu\Pages</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\RSX\Overlays\HomeMenu\overlay_home_menu_savestate.h">
       <Filter>Emu\GPU\RSX\Overlays\HomeMenu\Pages</Filter>
     </ClInclude>
     <ClInclude Include="Emu\RSX\Overlays\overlay_loading_icon.hpp">
