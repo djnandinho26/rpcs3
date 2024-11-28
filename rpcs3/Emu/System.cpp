@@ -142,6 +142,7 @@ void fmt_class_string<game_boot_result>::format(std::string& out, u64 arg)
 		case game_boot_result::savestate_version_unsupported: return "Savestate versioning data differs from your RPCS3 build.\nTry to use an older or newer RPCS3 build.\nEspecially if you know the build that created the savestate.";
 		case game_boot_result::still_running: return "Game is still running";
 		case game_boot_result::already_added: return "Game was already added";
+		case game_boot_result::currently_restricted: return "Booting is restricted at the time being";
 		}
 		return unknown;
 	});
@@ -802,15 +803,18 @@ std::string Emulator::GetBackgroundPicturePath() const
 
 bool Emulator::BootRsxCapture(const std::string& path)
 {
-	if (m_state != system_state::stopped)
+	if (m_state != system_state::stopped || m_restrict_emu_state_change)
 	{
 		return false;
 	}
+
+	m_state = system_state::loading;
 
 	fs::file in_file(path);
 
 	if (!in_file)
 	{
+		m_state = system_state::stopped;
 		return false;
 	}
 
@@ -837,6 +841,7 @@ bool Emulator::BootRsxCapture(const std::string& path)
 
 		if (load.data.empty())
 		{
+			m_state = system_state::stopped;
 			sys_log.error("Failed to unzip rsx capture file!");
 			return false;
 		}
@@ -850,18 +855,22 @@ bool Emulator::BootRsxCapture(const std::string& path)
 
 	if (frame->magic != rsx::c_fc_magic)
 	{
+		m_state = system_state::stopped;
 		sys_log.error("Invalid rsx capture file!");
 		return false;
 	}
 
 	if (frame->version != rsx::c_fc_version)
 	{
+		m_state = system_state::stopped;
 		sys_log.error("Rsx capture file version not supported! Expected %d, found %d", +rsx::c_fc_version, frame->version);
 		return false;
 	}
 
 	if (frame->LE_format != u32{std::endian::little == std::endian::native})
 	{
+		m_state = system_state::stopped;
+
 		static constexpr std::string_view machines[2]{"Big-Endian", "Little-Endian"};
 
 		sys_log.error("Rsx capture byte endianness not supported! Expected %s format, found %s format"
@@ -928,13 +937,33 @@ game_boot_result Emulator::GetElfPathFromDir(std::string& elf_path, const std::s
 
 game_boot_result Emulator::BootGame(const std::string& path, const std::string& title_id, bool direct, cfg_mode config_mode, const std::string& config_path)
 {
+	if (m_restrict_emu_state_change)
+	{
+		return game_boot_result::currently_restricted;
+	}
+
 	auto save_args = std::make_tuple(m_path, m_path_original, argv, envp, data, disc, klic, hdd1, m_config_mode, m_config_path);
 
 	auto restore_on_no_boot = [&](game_boot_result result)
 	{
-		if (IsStopped() || result != game_boot_result::no_errors)
+		if (m_state == system_state::stopped || result != game_boot_result::no_errors)
 		{
-			std::tie(m_path, m_path_original, argv, envp, data, disc, klic, hdd1, m_config_mode, m_config_path) = std::move(save_args);
+			ensure(IsStopped());
+
+			if (m_state == system_state::stopped)
+			{
+				std::tie(m_path, m_path_original, argv, envp, data, disc, klic, hdd1, m_config_mode, m_config_path) = std::move(save_args);
+			}
+			else
+			{
+				ensure(m_state == system_state::stopping);
+
+				// Execute after Kill() is done
+				Emu.after_kill_callback = [save_args = std::move(save_args), this]() mutable
+				{
+					std::tie(m_path, m_path_original, argv, envp, data, disc, klic, hdd1, m_config_mode, m_config_path) = std::move(save_args);
+				};
+			}
 		}
 
 		return result;
@@ -978,10 +1007,35 @@ void Emulator::SetForceBoot(bool force_boot)
 
 game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch, usz recursion_count)
 {
+	if (m_restrict_emu_state_change)
+	{
+		return game_boot_result::currently_restricted;
+	}
+
 	if (m_state != system_state::stopped)
 	{
 		return game_boot_result::still_running;
 	}
+
+	struct cleanup_t
+	{
+		Emulator* _this;
+		bool cleanup = true;
+
+		~cleanup_t() noexcept
+		{
+			_this->m_state.compare_and_swap_test(system_state::loading, system_state::stopped);
+
+			if (cleanup && _this->IsStopped())
+			{
+				_this->Kill(false);
+			}
+		}
+	} cleanup{this};
+
+	ensure(m_state.compare_and_swap_test(system_state::stopped, system_state::loading));
+
+	const auto guard = MakeEmulationStateGuard();
 
 	// Enable logging
 	rpcs3::utils::configure_logs(true);
@@ -1062,20 +1116,6 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 
 	sys_log.notice("Selected config: mode=%s, path=\"%s\"", m_config_mode, m_config_path);
 	sys_log.notice("Path: %s", m_path);
-
-	struct cleanup_t
-	{
-		Emulator* _this;
-		bool cleanup = true;
-
-		~cleanup_t()
-		{
-			if (cleanup && _this->IsStopped())
-			{
-				_this->Kill(false);
-			}
-		}
-	} cleanup{this};
 
 	std::string inherited_ps3_game_path;
 
@@ -1621,7 +1661,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 		{
 			m_state = system_state::ready;
 			GetCallbacks().on_ready();
-			g_fxo->init<main_ppu_module>();
+			ensure(g_fxo->init<main_ppu_module>());
 			vm::init();
 			m_force_boot = false;
 
@@ -2320,7 +2360,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 				sys_log.error("Booting HG category outside of HDD0!");
 			}
 
-			const auto _main = g_fxo->init<main_ppu_module>();
+			const auto _main = ensure(g_fxo->init<main_ppu_module>());
 
 			if (ppu_load_exec(ppu_exec, false, m_path, DeserialManager()))
 			{
@@ -2840,18 +2880,32 @@ void Emulator::Resume()
 
 u64 get_sysutil_cb_manager_read_count();
 
-void process_qt_events();
+void qt_events_aware_op(int repeat_duration_ms, std::function<bool()> wrapped_op);
 
 void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savestate)
 {
-	const auto old_state = m_state.load();
+	// Ensure no game has booted inbetween
+	const auto guard = Emu.MakeEmulationStateGuard();
+
+	stop_counter_t old_emu_id{};
+	system_state old_state{};
+
+	// Perform atomic load of both
+	do
+	{
+		old_emu_id = GetEmulationIdentifier();
+		old_state = m_state.load();
+	}
+	while (old_emu_id != GetEmulationIdentifier() || old_state != m_state.load());
 
 	if (old_state == system_state::stopped || old_state == system_state::stopping)
 	{
-		while (!async_op && m_state != system_state::stopped)
+		if (!async_op && old_state == system_state::stopping)
 		{
-			process_qt_events();
-			std::this_thread::sleep_for(16ms);
+			qt_events_aware_op(5, [&]()
+			{
+				return old_emu_id != GetEmulationIdentifier() || m_state != system_state::stopping;
+			});
 		}
 
 		return;
@@ -2859,10 +2913,12 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 
 	if (!savestate && m_emu_state_close_pending)
 	{
-		while (!async_op && m_state != system_state::stopped)
+		if (!async_op)
 		{
-			process_qt_events();
-			std::this_thread::sleep_for(16ms);
+			qt_events_aware_op(5, [&]()
+			{
+				return old_emu_id != GetEmulationIdentifier() || m_state != system_state::stopping;
+			});
 		}
 
 		return;
@@ -2880,10 +2936,12 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 		// The callback has been rudely ignored, we have no other option but to force termination
 		Kill(allow_autoexit && !savestate, savestate);
 
-		while (!async_op && m_state != system_state::stopped)
+		if (!async_op)
 		{
-			process_qt_events();
-			std::this_thread::sleep_for(16ms);
+			qt_events_aware_op(5, [&]()
+			{
+				return (old_emu_id != GetEmulationIdentifier() || m_state == system_state::stopped);
+			});
 		}
 
 		return;
@@ -2893,17 +2951,20 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 	{
 		bool read_sysutil_signal = false;
 
-		for (u32 i = 100; i < 140; i++)
+		u32 i = 100;
+
+		qt_events_aware_op(50, [&]()
 		{
-			std::this_thread::sleep_for(50ms);
+			if (i >= 140)
+			{
+				return true;
+			}
 
 			// TODO: Prevent pausing by other threads while in this loop
 			CallFromMainThread([this]()
 			{
 				Resume();
 			}, nullptr, true, read_counter);
-
-			process_qt_events(); // Is nullified when performed on non-main thread
 
 			if (!read_sysutil_signal && read_counter != get_sysutil_cb_manager_read_count())
 			{
@@ -2913,9 +2974,13 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 
 			if (static_cast<u64>(info) != m_stop_ctr)
 			{
-				return;
+				return true;
 			}
-		}
+
+			// Process events
+			i++;
+			return false;
+		});
 
 		// An inevitable attempt to terminate the *current* emulation course will be issued after 7s
 		CallFromMainThread([allow_autoexit, this]()
@@ -2932,11 +2997,10 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 	{
 		perform_kill();
 
-		while (m_state != system_state::stopped)
+		qt_events_aware_op(5, [&]()
 		{
-			process_qt_events();
-			std::this_thread::sleep_for(16ms);
-		}
+			return (old_emu_id != GetEmulationIdentifier() || m_state == system_state::stopped);
+		});
 	}
 }
 
@@ -3932,25 +3996,37 @@ u32 Emulator::AddGamesFromDir(const std::string& path)
 		games_added++;
 	}
 
-	process_qt_events();
+	fs::dir fs_dir{path};
 
-	// search direct subdirectories, that way we can drop one folder containing all games
-	for (auto&& dir_entry : fs::dir(path))
+	auto path_it = fs_dir.begin();
+
+	qt_events_aware_op(0, [&]()
 	{
-		if (!dir_entry.is_directory || dir_entry.name == "." || dir_entry.name == "..")
+		// search direct subdirectories, that way we can drop one folder containing all games
+		for (; path_it != fs_dir.end(); ++path_it)
 		{
-			continue;
+			auto dir_entry = std::move(*path_it);
+
+			if (!dir_entry.is_directory || dir_entry.name == "." || dir_entry.name == "..")
+			{
+				continue;
+			}
+
+			const std::string dir_path = path + '/' + dir_entry.name;
+
+			if (const game_boot_result error = AddGame(dir_path); error == game_boot_result::no_errors)
+			{
+				games_added++;
+			}
+
+			// Process events
+			++path_it;
+			return false;
 		}
 
-		const std::string dir_path = path + '/' + dir_entry.name;
-
-		if (const game_boot_result error = AddGame(dir_path); error == game_boot_result::no_errors)
-		{
-			games_added++;
-		}
-
-		process_qt_events();
-	}
+		// Exit loop
+		return true;
+	});
 
 	m_games_config.set_save_on_dirty(true);
 
