@@ -1007,12 +1007,12 @@ void Emulator::SetForceBoot(bool force_boot)
 
 game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch, usz recursion_count)
 {
-	if (m_restrict_emu_state_change)
+	if (recursion_count == 0 && m_restrict_emu_state_change)
 	{
 		return game_boot_result::currently_restricted;
 	}
 
-	if (m_state != system_state::stopped)
+	if (recursion_count == 0 && m_state != system_state::stopped)
 	{
 		return game_boot_result::still_running;
 	}
@@ -1020,20 +1020,25 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 	struct cleanup_t
 	{
 		Emulator* _this;
-		bool cleanup = true;
+		usz recursion_count;
 
 		~cleanup_t() noexcept
 		{
+			if (recursion_count != 0)
+			{
+				return;
+			}
+
 			_this->m_state.compare_and_swap_test(system_state::loading, system_state::stopped);
 
-			if (cleanup && _this->IsStopped())
+			if (_this->IsStopped())
 			{
 				_this->Kill(false);
 			}
 		}
-	} cleanup{this};
+	} cleanup{this, recursion_count};
 
-	ensure(m_state.compare_and_swap_test(system_state::stopped, system_state::loading));
+	ensure(recursion_count != 0 || m_state.compare_and_swap_test(system_state::stopped, system_state::loading));
 
 	const auto guard = MakeEmulationStateGuard();
 
@@ -3996,14 +4001,20 @@ u32 Emulator::AddGamesFromDir(const std::string& path)
 		games_added++;
 	}
 
-	fs::dir fs_dir{path};
+	std::vector<fs::dir_entry> entries;
 
-	auto path_it = fs_dir.begin();
+	for (auto&& dir_entry : fs::dir(path))
+	{
+		// Prefetch entries, it is unsafe to keep fs::dir for a long time or for many operations
+		entries.emplace_back(std::move(dir_entry));
+	}
+
+	auto path_it = entries.begin();
 
 	qt_events_aware_op(0, [&]()
 	{
 		// search direct subdirectories, that way we can drop one folder containing all games
-		for (; path_it != fs_dir.end(); ++path_it)
+		for (; path_it != entries.end(); ++path_it)
 		{
 			auto dir_entry = std::move(*path_it);
 
