@@ -274,16 +274,112 @@ public:
 
 	u64 start_timestamp_us = 0;
 
+	atomic_t<u32> m_wake_up = 0;
+	atomic_t<u32> m_done = 0;
+
+	void wake_up()
+	{
+		m_wake_up.release(1);
+		m_wake_up.notify_one();
+	}
+
+	void done()
+	{
+		m_done.release(1);
+		m_done.notify_one();
+	}
+
+	bool wait_for_result(ppu_thread& ppu)
+	{
+		while (!m_done && !ppu.is_stopped())
+		{
+			thread_ctrl::wait_on(m_done, 0);
+		}
+
+		if (ppu.is_stopped())
+		{
+			ppu.state += cpu_flag::again;
+			return false;
+		}
+
+		m_done = 0;
+		return true;
+	}
+
 	// helper functions
 	bool is_controller_ready(u32 gem_num) const
 	{
 		return controllers[gem_num].status == CELL_GEM_STATUS_READY;
 	}
 
+	void update_connections()
+	{
+		switch (g_cfg.io.move)
+		{
+		case move_handler::real:
+		case move_handler::fake:
+		{
+			connected_controllers = 0;
+
+			std::lock_guard lock(pad::g_pad_mutex);
+			const auto handler = pad::get_current_handler();
+
+			for (u32 i = 0; i < CELL_GEM_MAX_NUM; i++)
+			{
+				const auto& pad = ::at32(handler->GetPads(), pad_num(i));
+				const bool connected = (pad && (pad->m_port_status & CELL_PAD_STATUS_CONNECTED) && i < attribute.max_connect);
+				const bool is_real_move = g_cfg.io.move != move_handler::real || pad->m_pad_handler == pad_handler::move;
+
+				if (connected && is_real_move)
+				{
+					connected_controllers++;
+					controllers[i].status = CELL_GEM_STATUS_READY;
+					controllers[i].port = port_num(i);
+				}
+				else
+				{
+					controllers[i].status = CELL_GEM_STATUS_DISCONNECTED;
+					controllers[i].port = 0;
+				}
+			}
+			break;
+		}
+		case move_handler::raw_mouse:
+		{
+			connected_controllers = 0;
+
+			auto& handler = g_fxo->get<MouseHandlerBase>();
+			std::lock_guard mouse_lock(handler.mutex);
+
+			const MouseInfo& info = handler.GetInfo();
+
+			for (u32 i = 0; i < CELL_GEM_MAX_NUM; i++)
+			{
+				const bool connected = i < attribute.max_connect && info.status[i] == CELL_MOUSE_STATUS_CONNECTED;
+
+				if (connected)
+				{
+					connected_controllers++;
+					controllers[i].status = CELL_GEM_STATUS_READY;
+					controllers[i].port = port_num(i);
+				}
+				else
+				{
+					controllers[i].status = CELL_GEM_STATUS_DISCONNECTED;
+					controllers[i].port = 0;
+				}
+			}
+			break;
+		}
+		default:
+		{
+			break;
+		}
+		}
+	}
+
 	void update_calibration_status()
 	{
-		std::scoped_lock lock(mtx);
-
 		for (u32 gem_num = 0; gem_num < CELL_GEM_MAX_NUM; gem_num++)
 		{
 			gem_controller& controller = controllers[gem_num];
@@ -1154,16 +1250,43 @@ void gem_config_data::operator()()
 {
 	cellGem.notice("Starting thread");
 
+	u64 last_update_us = 0;
+
 	while (thread_ctrl::state() != thread_state::aborting && !Emu.IsStopped())
 	{
-		while (!video_conversion_in_progress && thread_ctrl::state() != thread_state::aborting && !Emu.IsStopped())
+		u64 timeout = umax;
+
+		if (state && !video_conversion_in_progress)
 		{
-			if (state)
+			constexpr u64 update_timeout_us = 100'000; // Update controllers at 10Hz
+			const u64 now_us = get_system_time();
+			const u64 elapsed_us = now_us - last_update_us;
+
+			if (elapsed_us < update_timeout_us)
 			{
+				timeout = update_timeout_us - elapsed_us;
+			}
+			else
+			{
+				timeout = update_timeout_us;
+				last_update_us = now_us;
+
+				std::scoped_lock lock(mtx);
+				update_connections();
 				update_calibration_status();
 			}
+		}
 
-			thread_ctrl::wait_for(1000);
+		if (!m_wake_up)
+		{
+			thread_ctrl::wait_on(m_wake_up, 0, timeout);
+		}
+
+		m_wake_up = 0;
+
+		if (!video_conversion_in_progress)
+		{
+			continue;
 		}
 
 		if (thread_ctrl::state() == thread_state::aborting || Emu.IsStopped())
@@ -1180,6 +1303,7 @@ void gem_config_data::operator()()
 		if (g_cfg.io.camera != camera_handler::qt)
 		{
 			video_conversion_in_progress = false;
+			done();
 			continue;
 		}
 
@@ -1196,6 +1320,7 @@ void gem_config_data::operator()()
 		}
 
 		video_conversion_in_progress = false;
+		done();
 	}
 }
 
@@ -1213,19 +1338,39 @@ public:
 		return m_busy;
 	}
 
-	void wake_up()
+	void wake_up_tracker()
 	{
-		m_wake_up.release(1);
-		m_wake_up.notify_one();
+		m_wake_up_tracker.release(1);
+		m_wake_up_tracker.notify_one();
 	}
 
-	void wait_for_result()
+	void tracker_done()
 	{
-		if (!m_done)
+		m_tracker_done.release(1);
+		m_tracker_done.notify_one();
+	}
+
+	bool wait_for_tracker_result(ppu_thread& ppu)
+	{
+		if (g_cfg.io.move != move_handler::real)
 		{
-			m_done.wait(0);
-			m_done.release(0);
+			m_tracker_done = 0;
+			return true;
 		}
+
+		while (!m_tracker_done && !ppu.is_stopped())
+		{
+			thread_ctrl::wait_on(m_tracker_done, 0);
+		}
+
+		if (ppu.is_stopped())
+		{
+			ppu.state += cpu_flag::again;
+			return false;
+		}
+
+		m_tracker_done = 0;
+		return true;
 	}
 
 	bool set_image(u32 addr)
@@ -1280,12 +1425,6 @@ public:
 		return ::at32(m_info, gem_num);
 	}
 
-	gem_tracker& operator=(thread_state)
-	{
-		wake_up();
-		return *this;
-	}
-
 	void operator()()
 	{
 		if (g_cfg.io.move != move_handler::real)
@@ -1303,10 +1442,10 @@ public:
 		while (thread_ctrl::state() != thread_state::aborting)
 		{
 			// Check if we have a new frame
-			if (!m_wake_up)
+			if (!m_wake_up_tracker)
 			{
-				m_wake_up.wait(0);
-				m_wake_up.release(0);
+				thread_ctrl::wait_on(m_wake_up_tracker, 0);
+				m_wake_up_tracker.release(0);
 
 				if (thread_ctrl::state() == thread_state::aborting)
 				{
@@ -1392,8 +1531,7 @@ public:
 			}
 
 			// Notify that we are finished with this frame
-			m_done.release(1);
-			m_done.notify_one();
+			tracker_done();
 
 			m_busy.release(false);
 		}
@@ -1404,8 +1542,8 @@ public:
 	shared_mutex mutex;
 
 private:
-	atomic_t<u32> m_wake_up = 0;
-	atomic_t<u32> m_done = 1;
+	atomic_t<u32> m_wake_up_tracker = 0;
+	atomic_t<u32> m_tracker_done = 0;
 	atomic_t<bool> m_busy = false;
 	ps_move_tracker<false> m_tracker{};
 	CellCameraInfoEx m_camera_info{};
@@ -2096,7 +2234,7 @@ error_code cellGemClearStatusFlags(u32 gem_num, u64 mask)
 	return CELL_OK;
 }
 
-error_code cellGemConvertVideoFinish()
+error_code cellGemConvertVideoFinish(ppu_thread& ppu)
 {
 	cellGem.warning("cellGemConvertVideoFinish()");
 
@@ -2112,9 +2250,9 @@ error_code cellGemConvertVideoFinish()
 		return CELL_GEM_ERROR_CONVERT_NOT_STARTED;
 	}
 
-	while (gem.video_conversion_in_progress && !Emu.IsStopped())
+	if (!gem.wait_for_result(ppu))
 	{
-		thread_ctrl::wait_for(100);
+		return {};
 	}
 
 	return CELL_OK;
@@ -2149,7 +2287,9 @@ error_code cellGemConvertVideoStart(vm::cptr<void> video_frame)
 	const auto& shared_data = g_fxo->get<gem_camera_shared>();
 	gem.video_data_in.resize(shared_data.size);
 	std::memcpy(gem.video_data_in.data(), video_frame.get_ptr(), gem.video_data_in.size());
+
 	gem.video_conversion_in_progress = true;
+	gem.wake_up();
 
 	return CELL_OK;
 }
@@ -2288,7 +2428,10 @@ error_code cellGemEnd(ppu_thread& ppu)
 	}
 
 	auto& tracker = g_fxo->get<named_thread<gem_tracker>>();
-	tracker.wait_for_result();
+	if (!tracker.wait_for_tracker_result(ppu))
+	{
+		return {};
+	}
 
 	gem.updating = false;
 
@@ -2630,69 +2773,6 @@ error_code cellGemGetInfo(vm::ptr<CellGemInfo> info)
 	if (!info)
 	{
 		return CELL_GEM_ERROR_INVALID_PARAMETER;
-	}
-
-	switch (g_cfg.io.move)
-	{
-	case move_handler::real:
-	case move_handler::fake:
-	{
-		gem.connected_controllers = 0;
-
-		std::lock_guard lock(pad::g_pad_mutex);
-		const auto handler = pad::get_current_handler();
-
-		for (u32 i = 0; i < CELL_GEM_MAX_NUM; i++)
-		{
-			const auto& pad = ::at32(handler->GetPads(), pad_num(i));
-			const bool connected = (pad && (pad->m_port_status & CELL_PAD_STATUS_CONNECTED) && i < gem.attribute.max_connect);
-			const bool is_real_move = g_cfg.io.move != move_handler::real || pad->m_pad_handler == pad_handler::move;
-
-			if (connected && is_real_move)
-			{
-				gem.connected_controllers++;
-				gem.controllers[i].status = CELL_GEM_STATUS_READY;
-				gem.controllers[i].port = port_num(i);
-			}
-			else
-			{
-				gem.controllers[i].status = CELL_GEM_STATUS_DISCONNECTED;
-				gem.controllers[i].port = 0;
-			}
-		}
-		break;
-	}
-	case move_handler::raw_mouse:
-	{
-		gem.connected_controllers = 0;
-
-		auto& handler = g_fxo->get<MouseHandlerBase>();
-		std::lock_guard mouse_lock(handler.mutex);
-
-		const MouseInfo& info = handler.GetInfo();
-
-		for (u32 i = 0; i < CELL_GEM_MAX_NUM; i++)
-		{
-			const bool connected = i < gem.attribute.max_connect && info.status[i] == CELL_MOUSE_STATUS_CONNECTED;
-
-			if (connected)
-			{
-				gem.connected_controllers++;
-				gem.controllers[i].status = CELL_GEM_STATUS_READY;
-				gem.controllers[i].port = port_num(i);
-			}
-			else
-			{
-				gem.controllers[i].status = CELL_GEM_STATUS_DISCONNECTED;
-				gem.controllers[i].port = 0;
-			}
-		}
-		break;
-	}
-	default:
-	{
-		break;
-	}
 	}
 
 	info->max_connect = gem.attribute.max_connect;
@@ -3049,6 +3129,8 @@ error_code cellGemInit(ppu_thread& ppu, vm::cptr<CellGemAttribute> attribute)
 
 	// TODO: is this correct?
 	gem.start_timestamp_us = get_guest_system_time();
+
+	gem.wake_up();
 
 	return CELL_OK;
 }
@@ -3439,7 +3521,7 @@ error_code cellGemTrackHues(vm::cptr<u32> req_hues, vm::ptr<u32> res_hues)
 	return CELL_OK;
 }
 
-error_code cellGemUpdateFinish()
+error_code cellGemUpdateFinish(ppu_thread& ppu)
 {
 	cellGem.warning("cellGemUpdateFinish()");
 
@@ -3458,7 +3540,10 @@ error_code cellGemUpdateFinish()
 	}
 
 	auto& tracker = g_fxo->get<named_thread<gem_tracker>>();
-	tracker.wait_for_result();
+	if (!tracker.wait_for_tracker_result(ppu))
+	{
+		return {};
+	}
 
 	gem.updating = false;
 
@@ -3508,7 +3593,7 @@ error_code cellGemUpdateStart(vm::cptr<void> camera_frame, u64 timestamp)
 		return not_an_error(CELL_GEM_NO_VIDEO);
 	}
 
-	tracker.wake_up();
+	tracker.wake_up_tracker();
 
 	return CELL_OK;
 }
