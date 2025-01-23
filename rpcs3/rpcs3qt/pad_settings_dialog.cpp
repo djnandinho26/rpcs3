@@ -20,6 +20,7 @@
 #include "Utilities/File.h"
 
 #include "Input/pad_thread.h"
+#include "Input/gui_pad_thread.h"
 #include "Input/product_info.h"
 #include "Input/keyboard_pad_handler.h"
 
@@ -244,6 +245,8 @@ pad_settings_dialog::~pad_settings_dialog()
 		m_input_thread_state = input_thread_state::pausing;
 		*m_input_thread = thread_state::finished;
 	}
+
+	gui_pad_thread::reset();
 
 	if (!Emu.IsStopped())
 	{
@@ -2017,7 +2020,7 @@ bool pad_settings_dialog::GetIsLddPad(u32 index) const
 	if (!Emu.IsStopped() && (m_title_id.empty() || m_title_id == Emu.GetTitleID()))
 	{
 		std::lock_guard lock(pad::g_pad_mutex);
-		if (const auto handler = pad::get_current_handler(true))
+		if (const auto handler = pad::get_pad_thread(true))
 		{
 			ensure(index < handler->GetPads().size());
 
