@@ -987,21 +987,26 @@ game_boot_result Emulator::BootGame(const std::string& path, const std::string& 
 			if (m_state == system_state::stopped)
 			{
 				std::tie(m_path, m_path_original, argv, envp, data, disc, klic, hdd1, m_config_mode, m_config_path) = std::move(save_args);
+
+				if (result != game_boot_result::no_errors)
+				{
+					GetCallbacks().close_gs_frame();
+				}
 			}
 			else
 			{
 				ensure(m_state == system_state::stopping);
 
 				// Execute after Kill() is done
-				Emu.after_kill_callback = [save_args = std::move(save_args), this]() mutable
+				Emu.after_kill_callback = [this, result, save_args = std::move(save_args)]() mutable
 				{
 					std::tie(m_path, m_path_original, argv, envp, data, disc, klic, hdd1, m_config_mode, m_config_path) = std::move(save_args);
-				};
-			}
 
-			if (result != game_boot_result::no_errors)
-			{
-				GetCallbacks().close_gs_frame();
+					if (result != game_boot_result::no_errors)
+					{
+						GetCallbacks().close_gs_frame();
+					}
+				};
 			}
 		}
 
@@ -3336,6 +3341,15 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 		std::string path;
 
 		static_cast<void>(init_mtx->init());
+
+		// Call explcit semi-destructors (free memory before savestate)
+		for (const auto& [type, data] : *g_fxo)
+		{
+			if (type.thread_op)
+			{
+				type.thread_op(data, thread_state::destroying_context);
+			}
+		}
 
 		auto set_progress_message = [&](std::string_view text)
 		{

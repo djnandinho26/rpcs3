@@ -604,17 +604,23 @@ void main_window::Boot(const std::string& path, const std::string& title_id, boo
 	{
 		gui_log.error("Boot failed: reason: %s, path: %s", error, path);
 		show_boot_error(error);
+		return;
+	}
+
+	if (is_savestate_compatible(path))
+	{
+		gui_log.success("Boot of savestate successful.");
+		AddRecentAction(gui::Recent_Game(QString::fromStdString(path), QString::fromStdString(Emu.GetTitleAndTitleID())), true);
 	}
 	else
 	{
 		gui_log.success("Boot successful.");
+		AddRecentAction(gui::Recent_Game(QString::fromStdString(Emu.GetBoot()), QString::fromStdString(Emu.GetTitleAndTitleID())), false);
+	}
 
-		AddRecentAction(gui::Recent_Game(qstr(Emu.GetBoot()), qstr(Emu.GetTitleAndTitleID())), is_savestate_compatible(path));
-
-		if (refresh_list)
-		{
-			m_game_list_frame->Refresh(true);
-		}
+	if (refresh_list)
+	{
+		m_game_list_frame->Refresh(true);
 	}
 }
 
@@ -2242,8 +2248,8 @@ void main_window::BootRecentAction(const QAction* act, bool is_savestate)
 			// refill menu with actions
 			for (int i = 0; i < rgw.actions.count(); i++)
 			{
-				rgw.actions[i]->setShortcut(tr("Ctrl+%1").arg(i + 1));
-				rgw.actions[i]->setToolTip(::at32(rgw.entries, i).second);
+				rgw.actions[i]->setShortcut(QString("%0+%1").arg(is_savestate ? "Alt" : "Ctrl").arg(i + 1));
+				rgw.actions[i]->setToolTip(::at32(rgw.entries, i).second + "\n" + ::at32(rgw.entries, i).first);
 				menu->addAction(rgw.actions[i]);
 			}
 
@@ -2288,8 +2294,8 @@ QAction* main_window::CreateRecentAction(const q_string_pair& entry, u32 sc_idx,
 	// create new action
 	QAction* act = new QAction(shown_name, this);
 	act->setData(entry.first);
-	act->setToolTip(entry.second);
-	act->setShortcut(tr("Ctrl+%1").arg(sc_idx));
+	act->setToolTip(entry.second + "\n" + entry.first);
+	act->setShortcut(QString("%0+%1").arg(is_savestate ? "Alt" : "Ctrl").arg(sc_idx));
 
 	// truncate if too long
 	if (shown_name.length() > 60)
@@ -2360,8 +2366,8 @@ void main_window::AddRecentAction(const q_string_pair& entry, bool is_savestate)
 	// refill menu with actions
 	for (int i = 0; i < rgw.actions.count(); i++)
 	{
-		rgw.actions[i]->setShortcut(tr("Ctrl+%1").arg(i + 1));
-		rgw.actions[i]->setToolTip(::at32(rgw.entries, i).second);
+		rgw.actions[i]->setShortcut(QString("%0+%1").arg(is_savestate ? "Alt" : "Ctrl").arg(i + 1));
+		rgw.actions[i]->setToolTip(::at32(rgw.entries, i).second + "\n" + ::at32(rgw.entries, i).first);
 		menu->addAction(rgw.actions[i]);
 	}
 
@@ -4217,15 +4223,21 @@ void main_window::dropEvent(QDropEvent* event)
 		{
 			gui_log.error("Boot failed: reason: %s, path: %s", error, path);
 			show_boot_error(error);
+			return;
+		}
+
+		if (is_savestate_compatible(path))
+		{
+			gui_log.success("Savestate Boot from drag and drop done: %s", path);
+			AddRecentAction(gui::Recent_Game(QString::fromStdString(path), QString::fromStdString(Emu.GetTitleAndTitleID())), true);
 		}
 		else
 		{
 			gui_log.success("Elf Boot from drag and drop done: %s", path);
-
-			AddRecentAction(gui::Recent_Game(QString::fromStdString(path), QString::fromStdString(Emu.GetTitleAndTitleID())), is_savestate_compatible(path));
-
-			m_game_list_frame->Refresh(true);
+			AddRecentAction(gui::Recent_Game(QString::fromStdString(Emu.GetBoot()), QString::fromStdString(Emu.GetTitleAndTitleID())), false);
 		}
+
+		m_game_list_frame->Refresh(true);
 		break;
 	}
 	case drop_type::drop_rrc: // replay a rsx capture file
