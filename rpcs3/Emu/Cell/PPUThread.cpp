@@ -2438,11 +2438,6 @@ void ppu_thread::serialize_common(utils::serial& ar)
 		fmt::throw_exception("Failed to serialize PPU thread ID=0x%x (cia=0x%x, ar=%s)", this->id, cia, ar);
 	}
 
-	if (ar.is_writing())
-	{
-		ppu_log.notice("Saving PPU Thread [0x%x: %s]: cia=0x%x, state=%s", id, *ppu_tname.load(), cia, +state);
-	}
-
 	ar(optional_savestate_state, vr);
 
 	if (!ar.is_writing())
@@ -2514,7 +2509,9 @@ ppu_thread::ppu_thread(utils::serial& ar)
 		}
 	};
 
-	switch (const u32 status = ar.pop<u32>())
+	const u32 status = ar.pop<u32>();
+
+	switch (status)
 	{
 	case PPU_THREAD_STATUS_IDLE:
 	{
@@ -2645,11 +2642,14 @@ ppu_thread::ppu_thread(utils::serial& ar)
 
 	ppu_tname = make_single<std::string>(ar.pop<std::string>());
 
-	ppu_log.notice("Loading PPU Thread [0x%x: %s]: cia=0x%x, state=%s", id, *ppu_tname.load(), cia, +state);
+	ppu_log.notice("Loading PPU Thread [0x%x: %s]: cia=0x%x, state=%s, status=%s", id, *ppu_tname.load(), cia, +state, ppu_thread_status{status});
 }
 
 void ppu_thread::save(utils::serial& ar)
 {
+	// For debugging purposes, load this as soon as this function enters
+	const bs_t<cpu_flag> state_flags = state;
+
 	USING_SERIALIZATION_VERSION(ppu);
 
 	const u64 entry = std::bit_cast<u64>(entry_func);
@@ -2699,6 +2699,15 @@ void ppu_thread::save(utils::serial& ar)
 	}
 
 	ar(*ppu_tname.load());
+
+	if (current_module && current_module[0])
+	{
+		ppu_log.notice("Saving PPU Thread [0x%x: %s]: cia=0x%x, state=%s, statu=%s (at function: %s)", id, *ppu_tname.load(), cia, state_flags, ppu_thread_status{status}, last_function);
+	}
+	else
+	{
+		ppu_log.notice("Saving PPU Thread [0x%x: %s]: cia=0x%x, state=%s, statu=%s", id, *ppu_tname.load(), cia, state_flags, ppu_thread_status{status});
+	}
 }
 
 ppu_thread::thread_name_t::operator std::string() const
@@ -5023,7 +5032,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 
 					if (source == func.addr)
 					{
-						(*shared_map)[func.addr - reloc] = reinterpret_cast<u64>(far_jump);
+						(*shared_map)[func.addr] = reinterpret_cast<u64>(far_jump);
 					}
 
 					ppu_register_function_at(source, 4, far_jump);
@@ -5408,6 +5417,11 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 	while (jits.size() < utils::aligned_div<u64>(module_counter, c_moudles_per_jit) && is_being_used_in_emulation)
 	{
 		jits.emplace_back(std::make_shared<jit_compiler>(s_link_table, g_cfg.core.llvm_cpu, 0, symbols_cement));
+
+		for (const auto& [addr, func] : *shared_map)
+		{
+			jits.back()->update_global_mapping(fmt::format("__0x%x", addr - reloc), func);
+		}
 	}
 
 	if (jit_mod.symbol_resolvers.empty() && is_being_used_in_emulation)
