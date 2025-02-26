@@ -48,6 +48,7 @@ target_include_directories(rpcs3_emu
 target_sources(rpcs3_emu PRIVATE
     ../util/atomic.cpp
     ../util/console.cpp
+    ../util/emu_utils.cpp
     ../util/media_utils.cpp
     ../util/video_provider.cpp
     ../util/logs.cpp
@@ -61,6 +62,7 @@ target_sources(rpcs3_emu PRIVATE
     ../../Utilities/cheat_info.cpp
     ../../Utilities/cond.cpp
     ../../Utilities/Config.cpp
+    ../../Utilities/date_time.cpp
     ../../Utilities/File.cpp
     ../../Utilities/JITASM.cpp
     ../../Utilities/JITLLVM.cpp
@@ -571,6 +573,7 @@ target_sources(rpcs3_emu PRIVATE
     RSX/Program/program_util.cpp
     RSX/Program/SPIRVCommon.cpp
     RSX/Program/VertexProgramDecompiler.cpp
+    RSX/GSFrameBase.cpp
     RSX/RSXDisAsm.cpp
     RSX/RSXFIFO.cpp
     RSX/RSXOffload.cpp
@@ -627,11 +630,6 @@ if(TARGET 3rdparty_vulkan)
         RSX/VK/VKVertexProgram.cpp
         RSX/VK/VKTextureCache.cpp
     )
-    if(MSVC)
-        set_source_files_properties(RSX/VK/vkutils/shared.cpp PROPERTIES
-        COMPILE_FLAGS /EHs-
-        SKIP_PRECOMPILE_HEADERS ON)
-    endif()
 endif()
 
 target_link_libraries(rpcs3_emu
@@ -641,7 +639,7 @@ target_link_libraries(rpcs3_emu
         3rdparty::vulkan 3rdparty::glew
         3rdparty::libusb 3rdparty::wolfssl
     PRIVATE
-        3rdparty::glslang 3rdparty::xxhash
+        3rdparty::glslang
 )
 
 if(APPLE)
