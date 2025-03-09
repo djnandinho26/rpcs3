@@ -28,6 +28,10 @@ if(USE_ASAN)
     set_source_files_properties(../../Utilities/Thread.cpp PROPERTIES COMPILE_DEFINITIONS USE_ASAN)
 endif()
 
+if(HAS_MEMORY_BREAKPOINTS)
+    target_compile_definitions(rpcs3_emu PRIVATE RPCS3_HAS_MEMORY_BREAKPOINTS)
+endif()
+
 target_link_libraries(rpcs3_emu
     PRIVATE
         3rdparty::zlib 3rdparty::yaml-cpp 3rdparty::zstd
@@ -139,8 +143,8 @@ target_sources(rpcs3_emu PRIVATE
 )
 
 if(USE_FAUDIO)
-    find_package(SDL2)
-    if(SDL2_FOUND AND SDL2_VERSION VERSION_GREATER_EQUAL 2.0.9)
+    find_package(SDL3)
+    if(SDL3_FOUND AND SDL3_VERSION VERSION_GREATER_EQUAL 3.2.0)
         target_sources(rpcs3_emu PRIVATE
             Audio/FAudio/FAudioBackend.cpp
             Audio/FAudio/faudio_enumerator.cpp
@@ -484,6 +488,7 @@ target_sources(rpcs3_emu PRIVATE
     RSX/Common/surface_store.cpp
     RSX/Common/TextureUtils.cpp
     RSX/Common/texture_cache.cpp
+    RSX/Common/texture_cache_types.cpp
     RSX/Core/RSXContext.cpp
     RSX/Core/RSXDisplay.cpp
     RSX/Core/RSXDrawCommands.cpp
@@ -596,8 +601,10 @@ if(TARGET 3rdparty_vulkan)
         RSX/VK/vkutils/descriptors.cpp
         RSX/VK/vkutils/image.cpp
         RSX/VK/vkutils/image_helpers.cpp
+        RSX/VK/vkutils/instance.cpp
         RSX/VK/vkutils/scratch.cpp
         RSX/VK/vkutils/sync.cpp
+        RSX/VK/vkutils/swapchain.cpp
         RSX/VK/vkutils/memory.cpp
         RSX/VK/vkutils/device.cpp
         RSX/VK/vkutils/sampler.cpp
@@ -634,7 +641,7 @@ endif()
 
 target_link_libraries(rpcs3_emu
     PUBLIC
-        3rdparty::ffmpeg 3rdparty::sdl2
+        3rdparty::ffmpeg 3rdparty::sdl3
         3rdparty::opengl 3rdparty::stblib
         3rdparty::vulkan 3rdparty::glew
         3rdparty::libusb 3rdparty::wolfssl
