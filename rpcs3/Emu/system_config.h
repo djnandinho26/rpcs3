@@ -119,7 +119,7 @@ struct cfg_root : cfg::node
 	{
 		node_video(cfg::node* _this) : cfg::node(_this, "Video") {}
 
-#ifdef __APPLE__
+#if defined(HAVE_VULKAN)
 		cfg::_enum<video_renderer> renderer{ this, "Renderer", video_renderer::vulkan };
 #else
 		cfg::_enum<video_renderer> renderer{ this, "Renderer", video_renderer::opengl };
@@ -130,7 +130,7 @@ struct cfg_root : cfg::node
 		cfg::_enum<frame_limit_type> frame_limit{ this, "Frame limit", frame_limit_type::_auto, true };
 		cfg::_float<0, 1000> second_frame_limit{ this, "Second Frame Limit", 0, true }; // 0 disables its effect
 		cfg::_enum<msaa_level> antialiasing_level{ this, "MSAA", msaa_level::_auto };
-		cfg::_enum<shader_mode> shadermode{ this, "Shader Mode", shader_mode::async_recompiler };
+		cfg::_enum<shader_mode> shadermode{ this, "Shader Mode", shader_mode::async_with_interpreter };
 		cfg::_enum<gpu_preset_level> shader_precision{ this, "Shader Precision", gpu_preset_level::high };
 
 		cfg::_bool write_color_buffers{ this, "Write Color Buffers" };
