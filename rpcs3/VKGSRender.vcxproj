@@ -19,6 +19,7 @@
     <ClInclude Include="Emu\RSX\VK\VKCommandStream.h" />
     <ClInclude Include="Emu\RSX\VK\VKCommonDecompiler.h" />
     <ClInclude Include="Emu\RSX\VK\VKCompute.h" />
+    <ClInclude Include="Emu\RSX\VK\VKDataHeapManager.h" />
     <ClInclude Include="Emu\RSX\VK\VKDMA.h" />
     <ClInclude Include="Emu\RSX\VK\VKFormats.h" />
     <ClInclude Include="Emu\RSX\VK\VKFragmentProgram.h" />
@@ -28,6 +29,7 @@
     <ClInclude Include="Emu\RSX\VK\VKHelpers.h" />
     <ClInclude Include="Emu\RSX\VK\VKOverlays.h" />
     <ClInclude Include="Emu\RSX\VK\VKPipelineCompiler.h" />
+    <ClInclude Include="Emu\RSX\VK\VKProcTable.h" />
     <ClInclude Include="Emu\RSX\VK\VKProgramBuffer.h" />
     <ClInclude Include="Emu\RSX\VK\VKProgramPipeline.h" />
     <ClInclude Include="Emu\RSX\VK\VKQueryPool.h" />
@@ -73,6 +75,7 @@
     <ClCompile Include="Emu\RSX\VK\VKCommandStream.cpp" />
     <ClCompile Include="Emu\RSX\VK\VKCommonDecompiler.cpp" />
     <ClCompile Include="Emu\RSX\VK\VKCompute.cpp" />
+    <ClCompile Include="Emu\RSX\VK\VKDataHeapManager.cpp" />
     <ClCompile Include="Emu\RSX\VK\VKDMA.cpp" />
     <ClCompile Include="Emu\RSX\VK\VKDraw.cpp" />
     <ClCompile Include="Emu\RSX\VK\VKFormats.cpp" />
@@ -112,6 +115,7 @@
     <ClCompile Include="Emu\RSX\VK\VKVertexProgram.cpp" />
     <ClCompile Include="Emu\RSX\VK\VKTextureCache.cpp" />
     <ClCompile Include="Emu\RSX\VK\VKMemAlloc.cpp" />
+    <ClCompile Include="Emu\RSX\VK\VulkanAPI.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="emucore.vcxproj">
@@ -120,7 +124,6 @@
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{3EE5F075-B546-42C4-B6A8-E3CCEF38B78D}</ProjectGuid>
-    <Keyword>Win32Proj</Keyword>
     <RootNamespace>VKGSRender</RootNamespace>
   </PropertyGroup>
   <Import Project="$(SolutionDir)\buildfiles\msvc\common_default.props" />
@@ -152,7 +155,7 @@
   <PropertyGroup />
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalIncludeDirectories>$(VULKAN_SDK)\Include;$(SolutionDir)\3rdparty\glslang\glslang\Public;..\3rdparty\glslang\glslang;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(VULKAN_SDK)\Include;$(SolutionDir)\3rdparty\glslang\glslang\Public;..\3rdparty\glslang\glslang;%(AdditionalIncludeDirectories);$(SolutionDir)3rdparty\GPUOpen\VulkanMemoryAllocator\include</AdditionalIncludeDirectories>
       <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">/bigobj %(AdditionalOptions)</AdditionalOptions>
       <Optimization Condition="'$(Configuration)|$(Platform)'=='Release|x64'">MaxSpeed</Optimization>
     </ClCompile>

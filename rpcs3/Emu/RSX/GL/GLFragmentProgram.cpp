@@ -33,7 +33,7 @@ void GLFragmentDecompilerThread::insertHeader(std::stringstream & OS)
 
 	if (device_props.has_native_half_support)
 	{
-		const auto driver_caps = gl::get_driver_caps();
+		const auto& driver_caps = gl::get_driver_caps();
 		if (driver_caps.NV_gpu_shader5_supported)
 		{
 			required_extensions.push_back("GL_NV_gpu_shader5");
@@ -47,14 +47,14 @@ void GLFragmentDecompilerThread::insertHeader(std::stringstream & OS)
 	if (properties.multisampled_sampler_mask)
 	{
 		// Requires this extension or GLSL 450
-		const auto driver_caps = gl::get_driver_caps();
+		const auto& driver_caps = gl::get_driver_caps();
 		if (driver_caps.glsl_version.version >= 450)
 		{
 			gl_version = 450;
 		}
 		else
 		{
-			ensure(driver_caps.ARB_shader_texture_image_samples, "MSAA support on OpenGL requires a driver running OpenGL 4.5 or supporting GL_ARB_shader_texture_image_samples.");
+			ensure(driver_caps.ARB_shader_texture_image_samples_supported, "MSAA support on OpenGL requires a driver running OpenGL 4.5 or supporting GL_ARB_shader_texture_image_samples.");
 			required_extensions.push_back("GL_ARB_shader_texture_image_samples");
 		}
 	}
@@ -366,7 +366,7 @@ void GLFragmentProgram::Decompile(const RSXFragmentProgram& prog)
 
 	if (g_cfg.video.shader_precision == gpu_preset_level::low)
 	{
-		const auto driver_caps = gl::get_driver_caps();
+		const auto& driver_caps = gl::get_driver_caps();
 		decompiler.device_props.has_native_half_support = driver_caps.NV_gpu_shader5_supported || driver_caps.AMD_gpu_shader_half_float_supported;
 		decompiler.device_props.has_low_precision_rounding = driver_caps.vendor_NVIDIA;
 	}

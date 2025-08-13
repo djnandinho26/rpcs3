@@ -1,4 +1,4 @@
-﻿# Define GNU standard installation directories
+# Define GNU standard installation directories
 include(GNUInstallDirs)
 
 # Generate git-version.h at build time.
@@ -13,23 +13,23 @@ set(CMAKE_CXX_STANDARD 20)
 set(ADDITIONAL_LIBS "")
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     #on some Linux distros shm_unlink and similar functions are in librt only
-    set(ADDITIONAL_LIBS ${ADDITIONAL_LIBS} "rt")
+    list(APPEND ADDITIONAL_LIBS "rt")
 elseif(NOT WIN32 AND NOT CMAKE_CXX_FLAGS MATCHES "LIBICONV_PLUG")
     #it seems like glibc includes the iconv functions we use but other libc
     #implementations like the one on OSX don't seem implement them
-    set(ADDITIONAL_LIBS ${ADDITIONAL_LIBS} "iconv")
+    list(APPEND ADDITIONAL_LIBS "iconv")
 endif()
 
 if(UNIX AND NOT APPLE AND NOT ANDROID)
-    add_definitions(-DDATADIR="${CMAKE_INSTALL_FULL_DATADIR}/rpcs3")
+    add_compile_definitions(DATADIR="${CMAKE_INSTALL_FULL_DATADIR}/rpcs3")
     # Optionally enable X11 for window management
     find_package(X11)
     if(X11_FOUND)
-        add_definitions(-DHAVE_X11)
+        add_compile_definitions(HAVE_X11)
     endif()
     find_package(Wayland)
     if(WAYLAND_FOUND)
-        add_definitions(-DHAVE_WAYLAND)
+        add_compile_definitions(HAVE_WAYLAND)
     endif()
 endif()
 
@@ -51,6 +51,61 @@ endif()
 gen_git_version(${CMAKE_CURRENT_SOURCE_DIR})
 
 if (NOT ANDROID)
+    # Build rpcs3_lib
+    add_library(rpcs3_lib STATIC)
+
+    if(WIN32)
+        target_compile_definitions(rpcs3_lib PRIVATE UNICODE _UNICODE)
+    endif()
+
+    set_target_properties(rpcs3_lib
+        PROPERTIES
+            AUTOMOC ON
+            AUTOUIC ON)
+
+    target_link_libraries(rpcs3_lib
+        PUBLIC
+            3rdparty::stblib
+            3rdparty::libevdev
+            rpcs3_emu
+        PRIVATE
+            rpcs3_ui
+            3rdparty::discordRPC
+            3rdparty::qt6
+            3rdparty::hidapi
+            3rdparty::libusb
+            3rdparty::wolfssl
+            3rdparty::libcurl
+            3rdparty::zlib
+            3rdparty::opencv
+            3rdparty::fusion
+            ${ADDITIONAL_LIBS})
+
+    # Unix display manager
+    if(X11_FOUND)
+        target_link_libraries(rpcs3_lib PRIVATE X11::X11)
+    elseif(USE_VULKAN AND UNIX AND NOT WAYLAND_FOUND AND NOT APPLE AND NOT ANDROID)
+        # Wayland has been checked in 3rdparty/CMakeLists.txt already.
+        message(FATAL_ERROR "RPCS3 requires either X11 or Wayland (or both) for Vulkan.")
+    endif()
+
+    if(UNIX)
+        set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
+        find_package(Threads REQUIRED)
+        target_link_libraries(rpcs3_lib PRIVATE Threads::Threads)
+    endif()
+
+    if(WIN32)
+        target_link_libraries(rpcs3_lib PRIVATE ws2_32 Iphlpapi Winmm Psapi gdi32 setupapi)
+    else()
+        target_link_libraries(rpcs3_lib PRIVATE ${CMAKE_DL_LIBS})
+    endif()
+
+    if(USE_PRECOMPILED_HEADERS)
+        target_precompile_headers(rpcs3_lib PRIVATE stdafx.h)
+    endif()
+
+    # Build rpcs3 executable
     if(WIN32)
         add_executable(rpcs3 WIN32)
         target_sources(rpcs3 PRIVATE rpcs3.rc)
@@ -68,83 +123,17 @@ if (NOT ANDROID)
 
     target_sources(rpcs3
         PRIVATE
-        display_sleep_control.cpp
-        headless_application.cpp
-        main.cpp
-        main_application.cpp
-        module_verifier.cpp
-        rpcs3_version.cpp
-        stb_image.cpp
-        stdafx.cpp
-
-        Input/basic_keyboard_handler.cpp
-        Input/basic_mouse_handler.cpp
-        Input/ds3_pad_handler.cpp
-        Input/ds4_pad_handler.cpp
-        Input/dualsense_pad_handler.cpp
-        Input/evdev_joystick_handler.cpp
-        Input/evdev_gun_handler.cpp
-        Input/gui_pad_thread.cpp
-        Input/hid_pad_handler.cpp
-        Input/keyboard_pad_handler.cpp
-        Input/mm_joystick_handler.cpp
-        Input/pad_thread.cpp
-        Input/product_info.cpp
-        Input/ps_move_calibration.cpp
-        Input/ps_move_config.cpp
-        Input/ps_move_handler.cpp
-        Input/ps_move_tracker.cpp
-        Input/raw_mouse_config.cpp
-        Input/raw_mouse_handler.cpp
-        Input/sdl_pad_handler.cpp
-        Input/skateboard_pad_handler.cpp
-        Input/xinput_pad_handler.cpp
+            main.cpp
     )
-
-    set_target_properties(rpcs3
-        PROPERTIES
-            AUTOMOC ON
-            AUTOUIC ON)
 
     target_link_libraries(rpcs3
         PRIVATE
-            rpcs3_emu
-            rpcs3_ui
-            3rdparty::discordRPC
-            3rdparty::qt6
-            3rdparty::hidapi
-            3rdparty::libusb
-            3rdparty::wolfssl
-            3rdparty::libcurl
-            3rdparty::zlib
-            3rdparty::opencv
-            3rdparty::fusion
-            ${ADDITIONAL_LIBS})
-
-    # Unix display manager
-    if(X11_FOUND)
-        target_link_libraries(rpcs3 PRIVATE X11::X11)
-    elseif(USE_VULKAN AND UNIX AND NOT WAYLAND_FOUND AND NOT APPLE AND NOT ANDROID)
-        # Wayland has been checked in 3rdparty/CMakeLists.txt already.
-        message(FATAL_ERROR "RPCS3 requires either X11 or Wayland (or both) for Vulkan.")
-    endif()
-
-    if(UNIX)
-        set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
-        find_package(Threads REQUIRED)
-        target_link_libraries(rpcs3 PRIVATE Threads::Threads)
-    endif()
-
-    if(WIN32)
-        target_link_libraries(rpcs3 PRIVATE bcrypt ws2_32 Iphlpapi Winmm Psapi gdi32 setupapi pdh)
-    else()
-        target_link_libraries(rpcs3 PRIVATE ${CMAKE_DL_LIBS})
-    endif()
+            rpcs3_lib
+    )
 
     if(USE_PRECOMPILED_HEADERS)
         target_precompile_headers(rpcs3 PRIVATE stdafx.h)
     endif()
-
 
     # Copy icons to executable directory
     if(APPLE)
@@ -158,21 +147,18 @@ if (NOT ANDROID)
             COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/rpcs3.icns $<TARGET_FILE_DIR:rpcs3>/../Resources/rpcs3.icns
             COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/bin/Icons $<TARGET_FILE_DIR:rpcs3>/../Resources/Icons
             COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/bin/GuiConfigs $<TARGET_FILE_DIR:rpcs3>/../Resources/GuiConfigs
-            COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/bin/git $<TARGET_FILE_DIR:rpcs3>/../Resources/git
             COMMAND "${MACDEPLOYQT_EXECUTABLE}" "${PROJECT_BINARY_DIR}/bin/rpcs3.app" "${QT_DEPLOY_FLAGS}")
     elseif(UNIX)
         add_custom_command(TARGET rpcs3 POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/bin/Icons $<TARGET_FILE_DIR:rpcs3>/Icons
-            COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/bin/GuiConfigs $<TARGET_FILE_DIR:rpcs3>/GuiConfigs
-            COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/bin/git $<TARGET_FILE_DIR:rpcs3>/git)
+            COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/bin/GuiConfigs $<TARGET_FILE_DIR:rpcs3>/GuiConfigs)
     elseif(WIN32)
         add_custom_command(TARGET rpcs3 POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:OpenAL::OpenAL> $<TARGET_FILE_DIR:rpcs3>
             COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/bin/Icons $<TARGET_FILE_DIR:rpcs3>/Icons
             COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/bin/GuiConfigs $<TARGET_FILE_DIR:rpcs3>/GuiConfigs
-            COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/bin/git $<TARGET_FILE_DIR:rpcs3>/git
+            COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/bin/test $<TARGET_FILE_DIR:rpcs3>/test
             COMMAND "${WINDEPLOYQT_EXECUTABLE}" --no-compiler-runtime --no-opengl-sw --no-patchqt
-                --no-translations --no-system-d3d-compiler --no-quick-import
+                --no-translations --no-system-d3d-compiler --no-system-dxc-compiler --no-quick-import
                 --plugindir "$<IF:$<CXX_COMPILER_ID:MSVC>,$<TARGET_FILE_DIR:rpcs3>/plugins,$<TARGET_FILE_DIR:rpcs3>/share/qt6/plugins>"
                 --verbose 0 "$<TARGET_FILE:rpcs3>")
     endif()
@@ -195,9 +181,48 @@ if (NOT ANDROID)
             DESTINATION ${CMAKE_INSTALL_DATADIR}/rpcs3)
         install(DIRECTORY ../bin/GuiConfigs
             DESTINATION ${CMAKE_INSTALL_DATADIR}/rpcs3)
-        install(DIRECTORY ../bin/git
-            DESTINATION ${CMAKE_INSTALL_DATADIR}/rpcs3)
         install(DIRECTORY ../bin/test
             DESTINATION ${CMAKE_INSTALL_DATADIR}/rpcs3)
+    endif()
+endif()
+
+# Unit tests
+if(BUILD_RPCS3_TESTS)
+    find_package(GTest REQUIRED)
+
+    message(STATUS "Building unit tests...")
+
+    add_executable(rpcs3_test)
+
+    target_sources(rpcs3_test
+        PRIVATE
+            tests/test.cpp
+            tests/test_fmt.cpp
+            tests/test_simple_array.cpp
+            tests/test_address_range.cpp
+    )
+
+    target_link_libraries(rpcs3_test
+        PRIVATE
+            rpcs3_lib
+            rpcs3_emu
+            GTest::gtest
+    )
+
+    target_include_directories(rpcs3_test
+        PUBLIC
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/..
+    )
+
+    include(GoogleTest)
+    gtest_discover_tests(rpcs3_test)
+
+    if(RUN_RPCS3_TESTS)
+        add_custom_target(run_tests
+            ALL
+            COMMAND ${CMAKE_CTEST_COMMAND} -j -VV --output-on-failure
+            DEPENDS rpcs3_test
+     )
     endif()
 endif()

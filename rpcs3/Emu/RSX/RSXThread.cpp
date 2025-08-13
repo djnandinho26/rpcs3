@@ -1212,7 +1212,7 @@ namespace rsx
 				if (const u64 get_put = new_get_put.exchange(u64{umax});
 					get_put != umax)
 				{
-					vm::_ref<atomic_be_t<u64>>(dma_address + ::offset32(&RsxDmaControl::put)).release(get_put);
+					vm::_ptr<atomic_be_t<u64>>(dma_address + ::offset32(&RsxDmaControl::put))->release(get_put);
 					fifo_ctrl->set_get(static_cast<u32>(get_put));
 					fifo_ctrl->abort();
 					fifo_ret_addr = RSX_CALL_STACK_EMPTY;
@@ -1233,7 +1233,7 @@ namespace rsx
 		{
 			std::lock_guard lock(m_mtx_task);
 
-			m_invalidated_memory_range = utils::address_range::start_end(0x2 << 28, constants::local_mem_base + local_mem_size - 1);
+			m_invalidated_memory_range = utils::address_range32::start_end(0x2 << 28, constants::local_mem_base + local_mem_size - 1);
 			handle_invalidated_memory_range();
 		}
 	}
@@ -2005,6 +2005,9 @@ namespace rsx
 			}
 
 			m_graphics_state.clear(rsx::pipeline_state::xform_instancing_state_dirty);
+
+			// Emit invalidate here in case ucode is actually clean
+			m_program_cache_hint.invalidate_vertex_program(current_vertex_program);
 		}
 
 		if (!m_graphics_state.test(rsx::pipeline_state::vertex_program_dirty))
@@ -2034,6 +2037,8 @@ namespace rsx
 		}
 
 		current_vertex_program.texture_state.import(current_vp_texture_state, current_vp_metadata.referenced_textures_mask);
+
+		m_program_cache_hint.invalidate_vertex_program(current_vertex_program);
 	}
 
 	void thread::get_current_fragment_program(const std::array<std::unique_ptr<rsx::sampled_image_descriptor_base>, rsx::limits::fragment_textures_count>& sampler_descriptors)
@@ -2275,6 +2280,8 @@ namespace rsx
 				rsx_log.trace("FS exports depth component but depth test is disabled (INVALID_OPERATION)");
 			}
 		}
+
+		m_program_cache_hint.invalidate_fragment_program(current_fragment_program);
 	}
 
 	bool thread::invalidate_fragment_program(u32 dst_dma, u32 dst_offset, u32 size)
@@ -2292,8 +2299,8 @@ namespace rsx
 			return false;
 		}
 
-		const auto current_fragment_shader_range = address_range::start_length(shader_offset, current_fragment_program.total_length);
-		if (!current_fragment_shader_range.overlaps(address_range::start_length(dst_offset, size)))
+		const auto current_fragment_shader_range = address_range32::start_length(shader_offset, current_fragment_program.total_length);
+		if (!current_fragment_shader_range.overlaps(address_range32::start_length(dst_offset, size)))
 		{
 			// No range overlap
 			return false;
@@ -2450,7 +2457,7 @@ namespace rsx
 		}
 
 		rsx::reservation_lock<true> lock(sink, 16);
-		vm::_ref<atomic_t<CellGcmReportData>>(sink).store({timestamp(), value, 0});
+		vm::_ptr<atomic_t<CellGcmReportData>>(sink)->store({timestamp(), value, 0});
 	}
 
 	u32 thread::copy_zcull_stats(u32 memory_range_start, u32 memory_range, u32 destination)
@@ -2825,7 +2832,7 @@ namespace rsx
 
 		reader_lock lock(m_mtx_task);
 
-		const auto map_range = address_range::start_length(address, size);
+		const auto map_range = address_range32::start_length(address, size);
 
 		if (!m_invalidated_memory_range.valid())
 			return;
@@ -2911,7 +2918,7 @@ namespace rsx
 			// Queue up memory invalidation
 			std::lock_guard lock(m_mtx_task);
 			const bool existing_range_valid = m_invalidated_memory_range.valid();
-			const auto unmap_range = address_range::start_length(address, size);
+			const auto unmap_range = address_range32::start_length(address, size);
 
 			if (existing_range_valid && m_invalidated_memory_range.touches(unmap_range))
 			{

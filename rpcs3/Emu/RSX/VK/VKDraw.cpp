@@ -6,6 +6,7 @@
 #include "VKGSRender.h"
 #include "vkutils/buffer_object.h"
 #include "vkutils/chip_class.h"
+#include <vulkan/vulkan_core.h>
 
 namespace vk
 {
@@ -269,7 +270,6 @@ void VKGSRender::load_texture_env()
 		{
 			if (tex.enabled())
 			{
-				check_heap_status(VK_HEAP_CHECK_TEXTURE_UPLOAD_STORAGE);
 				*sampler_state = m_texture_cache.upload_texture(*m_current_command_buffer, tex, m_rtts);
 			}
 			else
@@ -323,6 +323,12 @@ void VKGSRender::load_texture_env()
 				{
 					// Most PS3-like formats can be linearly filtered without problem
 					can_sample_linear = true;
+				}
+				else if (sampler_state->format_class != rsx::classify_format(texture_format) &&
+					(texture_format == CELL_GCM_TEXTURE_A8R8G8B8 || texture_format == CELL_GCM_TEXTURE_D8R8G8B8))
+				{
+					// Depth format redirected to BGRA8 resample stage. Do not filter to avoid bits leaking
+					can_sample_linear = false;
 				}
 				else
 				{
@@ -428,7 +434,6 @@ void VKGSRender::load_texture_env()
 		{
 			if (rsx::method_registers.vertex_textures[i].enabled())
 			{
-				check_heap_status(VK_HEAP_CHECK_TEXTURE_UPLOAD_STORAGE);
 				*sampler_state = m_texture_cache.upload_texture(*m_current_command_buffer, tex, m_rtts);
 			}
 			else
@@ -549,9 +554,8 @@ bool VKGSRender::bind_texture_env()
 		if (view) [[likely]]
 		{
 			m_program->bind_uniform({ fs_sampler_handles[i]->value, view->value, view->image()->current_layout },
-				i,
-				::glsl::program_domain::glsl_fragment_program,
-				m_current_frame->descriptor_set);
+				vk::glsl::binding_set_index_fragment,
+				m_fs_binding_table->ftex_location[i]);
 
 			if (current_fragment_program.texture_state.redirected_textures & (1 << i))
 			{
@@ -571,27 +575,22 @@ bool VKGSRender::bind_texture_env()
 				}
 
 				m_program->bind_uniform({ m_stencil_mirror_sampler->value, stencil_view->value, stencil_view->image()->current_layout },
-					i,
-					::glsl::program_domain::glsl_fragment_program,
-					m_current_frame->descriptor_set,
-					true);
+					vk::glsl::binding_set_index_fragment,
+					m_fs_binding_table->ftex_stencil_location[i]);
 			}
 		}
 		else
 		{
 			const VkImageViewType view_type = vk::get_view_type(current_fragment_program.get_texture_dimension(i));
 			m_program->bind_uniform({ vk::null_sampler(), vk::null_image_view(*m_current_command_buffer, view_type)->value, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-				i,
-				::glsl::program_domain::glsl_fragment_program,
-				m_current_frame->descriptor_set);
+				vk::glsl::binding_set_index_fragment,
+				m_fs_binding_table->ftex_location[i]);
 
 			if (current_fragment_program.texture_state.redirected_textures & (1 << i))
 			{
 				m_program->bind_uniform({ vk::null_sampler(), vk::null_image_view(*m_current_command_buffer, view_type)->value, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-					i,
-					::glsl::program_domain::glsl_fragment_program,
-					m_current_frame->descriptor_set,
-					true);
+					vk::glsl::binding_set_index_fragment,
+					m_fs_binding_table->ftex_stencil_location[i]);
 			}
 		}
 	}
@@ -605,9 +604,8 @@ bool VKGSRender::bind_texture_env()
 		{
 			const auto view_type = vk::get_view_type(current_vertex_program.get_texture_dimension(i));
 			m_program->bind_uniform({ vk::null_sampler(), vk::null_image_view(*m_current_command_buffer, view_type)->value, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-				i,
-				::glsl::program_domain::glsl_vertex_program,
-				m_current_frame->descriptor_set);
+				vk::glsl::binding_set_index_vertex,
+				m_vs_binding_table->vtex_location[i]);
 
 			continue;
 		}
@@ -629,9 +627,8 @@ bool VKGSRender::bind_texture_env()
 			const auto view_type = vk::get_view_type(current_vertex_program.get_texture_dimension(i));
 
 			m_program->bind_uniform({ vk::null_sampler(), vk::null_image_view(*m_current_command_buffer, view_type)->value, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-				i,
-				::glsl::program_domain::glsl_vertex_program,
-				m_current_frame->descriptor_set);
+				vk::glsl::binding_set_index_vertex,
+				m_vs_binding_table->vtex_location[i]);
 
 			continue;
 		}
@@ -639,9 +636,8 @@ bool VKGSRender::bind_texture_env()
 		validate_image_layout_for_read_access(*m_current_command_buffer, image_ptr, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, sampler_state);
 
 		m_program->bind_uniform({ vs_sampler_handles[i]->value, image_ptr->value, image_ptr->image()->current_layout },
-			i,
-			::glsl::program_domain::glsl_vertex_program,
-			m_current_frame->descriptor_set);
+			vk::glsl::binding_set_index_vertex,
+			m_vs_binding_table->vtex_location[i]);
 	}
 
 	return out_of_memory;
@@ -716,7 +712,7 @@ bool VKGSRender::bind_interpreter_texture_env()
 		}
 	}
 
-	m_shader_interpreter.update_fragment_textures(texture_env, m_current_frame->descriptor_set);
+	m_shader_interpreter.update_fragment_textures(texture_env);
 	return out_of_memory;
 }
 
@@ -764,9 +760,6 @@ void VKGSRender::emit_geometry(u32 sub_index)
 		draw_call.end();
 		return;
 	}
-
-	const auto old_persistent_buffer = m_persistent_attribute_storage ? m_persistent_attribute_storage->value : null_buffer_view->value;
-	const auto old_volatile_buffer = m_volatile_attribute_storage ? m_volatile_attribute_storage->value : null_buffer_view->value;
 
 	// Programs data is dependent on vertex state
 	auto upload_info = upload_vertex_data();
@@ -822,8 +815,6 @@ void VKGSRender::emit_geometry(u32 sub_index)
 	auto volatile_buffer = m_volatile_attribute_storage ? m_volatile_attribute_storage->value : null_buffer_view->value;
 	bool update_descriptors = false;
 
-	const auto& binding_table = m_device->get_pipeline_binding_table();
-
 	if (m_current_draw.subdraw_id == 0)
 	{
 		update_descriptors = true;
@@ -837,38 +828,11 @@ void VKGSRender::emit_geometry(u32 sub_index)
 			if (m_vertex_layout_storage &&
 				m_vertex_layout_storage->info.buffer != m_vertex_layout_ring_info.heap->value)
 			{
-				m_current_frame->buffer_views_to_clean.push_back(std::move(m_vertex_layout_storage));
+				vk::get_resource_manager()->dispose(m_vertex_layout_storage);
 			}
 
 			vk::clear_status_interrupt(vk::heap_changed);
 		}
-	}
-	else if (persistent_buffer != old_persistent_buffer || volatile_buffer != old_volatile_buffer)
-	{
-		// Need to update descriptors; make a copy for the next draw
-		VkDescriptorSet previous_set = m_current_frame->descriptor_set.value();
-		m_current_frame->descriptor_set.flush();
-		m_current_frame->descriptor_set = allocate_descriptor_set();
-		rsx::simple_array<VkCopyDescriptorSet> copy_cmds(binding_table.total_descriptor_bindings);
-
-		for (u32 n = 0; n < binding_table.total_descriptor_bindings; ++n)
-		{
-			copy_cmds[n] =
-			{
-				VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET,   // sType
-				nullptr,                                 // pNext
-				previous_set,                            // srcSet
-				n,                                       // srcBinding
-				0u,                                      // srcArrayElement
-				m_current_frame->descriptor_set.value(), // dstSet
-				n,                                       // dstBinding
-				0u,                                      // dstArrayElement
-				1u                                       // descriptorCount
-			};
-		}
-
-		m_current_frame->descriptor_set.push(copy_cmds);
-		update_descriptors = true;
 	}
 
 	// Update vertex fetch parameters
@@ -877,9 +841,9 @@ void VKGSRender::emit_geometry(u32 sub_index)
 	ensure(m_vertex_layout_storage);
 	if (update_descriptors)
 	{
-		m_program->bind_uniform(persistent_buffer, binding_table.vertex_buffers_first_bind_slot, m_current_frame->descriptor_set);
-		m_program->bind_uniform(volatile_buffer, binding_table.vertex_buffers_first_bind_slot + 1, m_current_frame->descriptor_set);
-		m_program->bind_uniform(m_vertex_layout_storage->value, binding_table.vertex_buffers_first_bind_slot + 2, m_current_frame->descriptor_set);
+		m_program->bind_uniform(persistent_buffer, vk::glsl::binding_set_index_vertex, m_vs_binding_table->vertex_buffers_location);
+		m_program->bind_uniform(volatile_buffer, vk::glsl::binding_set_index_vertex, m_vs_binding_table->vertex_buffers_location + 1);
+		m_program->bind_uniform(m_vertex_layout_storage->value, vk::glsl::binding_set_index_vertex, m_vs_binding_table->vertex_buffers_location + 2);
 	}
 
 	bool reload_state = (!m_current_draw.subdraw_id++);
@@ -903,10 +867,12 @@ void VKGSRender::emit_geometry(u32 sub_index)
 		reload_state = true;
 	});
 
+	// Bind both pipe and descriptors in one go
+	// FIXME: We only need to rebind the pipeline when reload state is set. Flags?
+	m_program->bind(*m_current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS);
+
 	if (reload_state)
 	{
-		vkCmdBindPipeline(*m_current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_program->pipeline);
-
 		update_draw_state();
 		begin_render_pass();
 
@@ -918,13 +884,12 @@ void VKGSRender::emit_geometry(u32 sub_index)
 			info.sType = VK_STRUCTURE_TYPE_CONDITIONAL_RENDERING_BEGIN_INFO_EXT;
 			info.buffer = m_cond_render_buffer->value;
 
-			m_device->_vkCmdBeginConditionalRenderingEXT(*m_current_command_buffer, &info);
+			_vkCmdBeginConditionalRenderingEXT(*m_current_command_buffer, &info);
 			m_current_command_buffer->flags |= vk::command_buffer::cb_has_conditional_render;
 		}
 	}
 
 	// Bind the new set of descriptors for use with this draw call
-	m_current_frame->descriptor_set.bind(*m_current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_program->pipeline_layout);
 	m_frame_stats.setup_time += m_profiler.duration();
 
 	if (!upload_info.index_info)
@@ -936,6 +901,12 @@ void VKGSRender::emit_geometry(u32 sub_index)
 		else if (draw_call.is_single_draw())
 		{
 			vkCmdDraw(*m_current_command_buffer, upload_info.vertex_draw_count, 1, 0, 0);
+		}
+		else if (m_device->get_multidraw_support())
+		{
+			const auto subranges = draw_call.get_subranges();
+			auto ptr = utils::bless<const VkMultiDrawInfoEXT>(& subranges.front().first);
+			_vkCmdDrawMultiEXT(*m_current_command_buffer, ::size32(subranges), ptr, 1, 0, sizeof(rsx::draw_range_t));
 		}
 		else
 		{
@@ -962,6 +933,30 @@ void VKGSRender::emit_geometry(u32 sub_index)
 		else if (rsx::method_registers.current_draw_clause.is_single_draw())
 		{
 			vkCmdDrawIndexed(*m_current_command_buffer, upload_info.vertex_draw_count, 1, 0, 0, 0);
+		}
+		else if (m_device->get_multidraw_support())
+		{
+			const auto subranges = draw_call.get_subranges();
+			const auto subranges_count = ::size32(subranges);
+			const auto allocation_size = subranges_count * sizeof(VkMultiDrawIndexedInfoEXT);
+
+			m_multidraw_parameters_buffer.resize(allocation_size);
+			auto base_ptr = utils::bless<VkMultiDrawIndexedInfoEXT>(m_multidraw_parameters_buffer.data());
+
+			u32 vertex_offset = 0;
+			auto _ptr = base_ptr;
+
+			for (const auto& range : subranges)
+			{
+				const auto count = get_index_count(draw_call.primitive, range.count);
+				_ptr->firstIndex = vertex_offset;
+				_ptr->indexCount = count;
+				_ptr->vertexOffset = 0;
+
+				_ptr++;
+				vertex_offset += count;
+			}
+			_vkCmdDrawMultiIndexedEXT(*m_current_command_buffer, subranges_count, base_ptr, 1, 0, sizeof(VkMultiDrawIndexedInfoEXT), nullptr);
 		}
 		else
 		{
@@ -1031,10 +1026,7 @@ void VKGSRender::end()
 		m_current_frame->flags &= ~frame_context_state::dirty;
 	}
 
-	if (m_graphics_state & (rsx::pipeline_state::fragment_program_ucode_dirty | rsx::pipeline_state::vertex_program_ucode_dirty))
-	{
-		analyse_current_rsx_pipeline();
-	}
+	analyse_current_rsx_pipeline();
 
 	m_frame_stats.setup_time += m_profiler.duration();
 
@@ -1050,9 +1042,6 @@ void VKGSRender::end()
 		rsx::thread::end();
 		return;
 	}
-
-	// Allocate descriptor set
-	m_current_frame->descriptor_set = allocate_descriptor_set();
 
 	// Load program execution environment
 	load_program_env();
@@ -1110,9 +1099,6 @@ void VKGSRender::end()
 	m_texture_cache.release_uncached_temporary_subresources();
 	m_frame_stats.textures_upload_time += m_profiler.duration();
 
-	// Final heap check...
-	check_heap_status(VK_HEAP_CHECK_VERTEX_STORAGE | VK_HEAP_CHECK_VERTEX_LAYOUT_STORAGE);
-
 	u32 sub_index = 0;               // RSX subdraw ID
 	m_current_draw.subdraw_id = 0;   // Host subdraw ID. Invalid RSX subdraws do not increment this value
 
@@ -1137,7 +1123,7 @@ void VKGSRender::end()
 
 	if (m_current_command_buffer->flags & vk::command_buffer::cb_has_conditional_render)
 	{
-		m_device->_vkCmdEndConditionalRenderingEXT(*m_current_command_buffer);
+		_vkCmdEndConditionalRenderingEXT(*m_current_command_buffer);
 		m_current_command_buffer->flags &= ~(vk::command_buffer::cb_has_conditional_render);
 	}
 

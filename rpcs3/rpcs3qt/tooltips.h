@@ -41,6 +41,8 @@ public:
 		const QString force_hw_MSAA                = tr("Forces MSAA to use the host GPU's resolve capabilities for all sampling operations.\nThis option incurs a performance penalty as well as the risk of visual artifacts but can yield crisper visuals when MSAA is enabled.");
 		const QString disable_vertex_cache         = tr("Disables the vertex cache.\nMight resolve missing or flickering graphics output.\nMay degrade performance.");
 		const QString disable_async_host_mm        = tr("Force host memory management calls to be inlined instead of handled asynchronously.\nThis can cause severe performance degradation and stuttering in some games.\nThis option is only needed by developers to debug problems with texture cache memory protection.");
+		const QString disable_spin_optimization    = tr("Disable SPU GETLLAR spin optimization.\nThis can cause severe performance degradation and stuttering in many games.\nThis option is only needed for a select number of games.");
+		const QString enable_spu_events_busy_loop  = tr("Enable SPU RdEventStat spin.\nThis increases CPU usage, this setting is beneficial for high-threaded CPUs (12+) with select number of games.");
 		const QString zcull_operation_mode         = tr("Changes ZCULL report synchronization behaviour. Experiment to find the best option for your game. Approximate mode is recommended for most games.\n· Precise is the most accurate to PS3 behaviour. Required for accurate visuals in some titles such as Demon's Souls and The Darkness.\n· Approximate is a much faster way to generate occlusion data which may not always match what the PS3 would generate. Works well with most PS3 games.\n· Relaxed changes the synchronization method completely and can greatly improve performance in some games or completely break others.");
 		const QString max_spurs_threads            = tr("Limits the maximum number of SPURS threads in each thread group.\nMay improve performance in some cases, especially on systems with limited number of hardware threads.\nLimiting the number of threads is likely to cause crashes; it's recommended to keep this at the default value.");
 		const QString sleep_timers_accuracy        = tr("Changes the sleep period accuracy.\n'As Host' uses default accuracy of the underlying operating system, while 'All Timers' attempts to improve it.\n'Usleep Only' limits the adjustments to usleep syscall only.\nCan affect performance in unexpected ways.");
@@ -55,7 +57,7 @@ public:
 		const QString anti_cheat_savestates        = tr("When this mode is on, emulation exits when saving and the savestate file is concealed after its load, preventing reuse by RPCS3.\nThis mode is like hibernation of emulation: if you don't want to be able to cheat using savestates when playing the game, consider using this mode.\nDo note that the savestate file is not gone completely, just ignored by RPCS3. You can manually relaunch it if needed.");
 		const QString compatible_savestates        = tr("When this mode is on, SPU emulation prioritizes savestate compatibility, however, it may reduce performance slightly.\nWhen this mode is off, some games may not allow making a savestate and show an SPU pause error in the log.");
 		const QString paused_savestates            = tr("When this mode is on, savestates are loaded and paused on the first frame.\nThis allows players to prepare for gameplay without being thrown into the action immediately.");
-		const QString spu_profiler                 = tr("When enabled, SPU performance is measured at runtime.\nEnable only at a developr's request because when enabled it reduces performance a bit by itself.");
+		const QString spu_profiler                 = tr("When enabled, SPU performance is measured at runtime.\nEnable only at a developer's request because when enabled it reduces performance a bit by itself.");
 
 		// audio
 
@@ -127,6 +129,8 @@ public:
 
 		// emulator
 
+		const QString enable_gamemode              = tr("Activate Feral Interactive's GameMode.\nThis is a series of CPU and GPU optimizations and can potentially benefit game performance on some systems.");
+		const QString no_gamemode                  = tr("This requires Feral Interactive's GameMode to be installed.\nGameMode is a series of CPU and GPU optimizations and can potentially benefit game performance on some systems.\nTo install GameMode for your specific Linux distribution, go to the GitHub page:https://github.com/FeralInteractive/gamemode.");
 		const QString exit_on_stop                 = tr("Automatically close RPCS3 when closing a game, or when a game closes itself.");
 		const QString pause_on_focus_loss          = tr("Automatically pause emulation when RPCS3 loses its focus or the application is inactive in order to save power and reduce CPU usage.\nDo note that emulation pausing in general is not perfect and may not be compatible with all games.\nAlthough it currently also pauses gameplay, it is not recommended to rely on it as this behavior may be changed in the future and it is not the purpose of this setting.");
 		const QString start_game_fullscreen        = tr("Automatically puts the game window in fullscreen.\nDouble click on the game window or press Alt+Enter to toggle fullscreen and windowed mode.");
@@ -165,7 +169,7 @@ public:
 		const QString perf_overlay_center_x                = tr("Centers the performance overlay horizontally and overrides the horizontal margin.");
 		const QString perf_overlay_center_y                = tr("Centers the performance overlay vertically and overrides the vertical margin.");
 
-		const QString shader_load_bg_enabled   = tr("Shows a background image during the native shader loading dialog/loading screen.\nBy default the used image will be <gamedir>/PS3_GAME/PIC1.PNG or <gamedir>/PS3_GAME/PIC0.PNG.");
+		const QString shader_load_bg_enabled   = tr("Shows a background image during the native shader loading dialog/loading screen.\nBy default the used image will be <gamedir>/PS3_GAME/PIC1.PNG.");
 		const QString shader_load_bg_darkening = tr("Changes the background image darkening effect strength of the native shader loading dialog.\nThis may be used to improve readability and/or aesthetics.");
 		const QString shader_load_bg_blur      = tr("Changes the background image blur effect strength of the native shader loading dialog.\nThis may be used to improve readability and/or aesthetics.");
 

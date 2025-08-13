@@ -21,11 +21,13 @@
 #endif
 
 #include "Emu/Audio/audio_utils.h"
+#include "Emu/Cell/Modules/cellSysutil.h"
 #include "Emu/Io/Null/null_camera_handler.h"
 #include "Emu/Io/Null/null_music_handler.h"
 #include "Emu/vfs_config.h"
 #include "util/init_mutex.hpp"
 #include "util/console.h"
+#include "qt_video_source.h"
 #include "trophy_notification_helper.h"
 #include "save_data_dialog.h"
 #include "msg_dialog_frame.h"
@@ -66,6 +68,8 @@ LOG_CHANNEL(gui_log, "GUI");
 
 std::unique_ptr<raw_mouse_handler> g_raw_mouse_handler;
 
+s32 gui_application::m_language_id = static_cast<s32>(CELL_SYSUTIL_LANG_ENGLISH_US);
+
 [[noreturn]] void report_fatal_error(std::string_view text, bool is_html = false, bool include_help_text = true);
 
 gui_application::gui_application(int& argc, char** argv) : QApplication(argc, argv)
@@ -101,17 +105,15 @@ bool gui_application::Init()
 		msg.setTextFormat(Qt::RichText);
 		msg.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
 		msg.setDefaultButton(QMessageBox::No);
-		msg.setText(tr(
-			R"(
-				<p style="white-space: nowrap;">
-					Please understand that this build is not an official RPCS3 release.<br>
-					This build contains changes that may break games, or even <b>damage</b> your data.<br>
-					We recommend to download and use the official build from the <a %0 href='https://rpcs3.net/download'>RPCS3 website</a>.<br><br>
-					Build origin: %1<br>
-					Do you wish to use this build anyway?
-				</p>
-			)"
-		).arg(gui::utils::get_link_style()).arg(Qt::convertFromPlainText(branch_name.data())));
+		msg.setText(gui::utils::make_paragraph(tr(
+			"Please understand that this build is not an official RPCS3 release.\n"
+			"This build contains changes that may break games, or even <b>damage</b> your data.\n"
+			"We recommend to download and use the official build from the %0.\n"
+			"\n"
+			"Build origin: %1\n"
+			"Do you wish to use this build anyway?")
+			.arg(gui::utils::make_link(tr("RPCS3 website"), "https://rpcs3.net/download"))
+			.arg(Qt::convertFromPlainText(branch_name.data()))));
 		msg.layout()->setSizeConstraint(QLayout::SetFixedSize);
 
 		if (msg.exec() == QMessageBox::No)
@@ -230,13 +232,13 @@ void gui_application::SwitchTranslator(QTranslator& translator, const QString& f
 			installTranslator(&translator);
 		}
 	}
-	else if (const QString default_code = QLocale(QLocale::English).bcp47Name(); language_code != default_code)
+	else if (QString default_code = QLocale(QLocale::English).bcp47Name(); language_code != default_code)
 	{
 		// show error, but ignore default case "en", since it is handled in source code
 		gui_log.error("No translation file found in: %s", file_path);
 
 		// reset current language to default "en"
-		m_language_code = default_code;
+		set_language_code(std::move(default_code));
 	}
 }
 
@@ -247,7 +249,7 @@ void gui_application::LoadLanguage(const QString& language_code)
 		return;
 	}
 
-	m_language_code = language_code;
+	set_language_code(language_code);
 
 	const QLocale locale      = QLocale(language_code);
 	const QString locale_name = QLocale::languageToString(locale.language());
@@ -307,6 +309,69 @@ QStringList gui_application::GetAvailableLanguageCodes()
 	}
 
 	return language_codes;
+}
+
+void gui_application::set_language_code(QString language_code)
+{
+	m_language_code = language_code;
+
+	// Transform language code to lowercase and use '-'
+	language_code = language_code.toLower().replace("_", "-");
+
+	// Try to find the CELL language ID for this language code
+	static const std::map<QString, CellSysutilLang> language_ids = {
+		{"ja", CELL_SYSUTIL_LANG_JAPANESE },
+		{"en", CELL_SYSUTIL_LANG_ENGLISH_US },
+		{"en-us", CELL_SYSUTIL_LANG_ENGLISH_US },
+		{"en-gb", CELL_SYSUTIL_LANG_ENGLISH_GB },
+		{"fr", CELL_SYSUTIL_LANG_FRENCH },
+		{"es", CELL_SYSUTIL_LANG_SPANISH },
+		{"de", CELL_SYSUTIL_LANG_GERMAN },
+		{"it", CELL_SYSUTIL_LANG_ITALIAN },
+		{"nl", CELL_SYSUTIL_LANG_DUTCH },
+		{"pt", CELL_SYSUTIL_LANG_PORTUGUESE_PT },
+		{"pt-pt", CELL_SYSUTIL_LANG_PORTUGUESE_PT },
+		{"pt-br", CELL_SYSUTIL_LANG_PORTUGUESE_BR },
+		{"ru", CELL_SYSUTIL_LANG_RUSSIAN },
+		{"ko", CELL_SYSUTIL_LANG_KOREAN },
+		{"zh", CELL_SYSUTIL_LANG_CHINESE_T },
+		{"zh-hant", CELL_SYSUTIL_LANG_CHINESE_T },
+		{"zh-hans", CELL_SYSUTIL_LANG_CHINESE_S },
+		{"fi", CELL_SYSUTIL_LANG_FINNISH },
+		{"sv", CELL_SYSUTIL_LANG_SWEDISH },
+		{"da", CELL_SYSUTIL_LANG_DANISH },
+		{"no", CELL_SYSUTIL_LANG_NORWEGIAN },
+		{"nn", CELL_SYSUTIL_LANG_NORWEGIAN },
+		{"nb", CELL_SYSUTIL_LANG_NORWEGIAN },
+		{"pl", CELL_SYSUTIL_LANG_POLISH },
+		{"tr", CELL_SYSUTIL_LANG_TURKISH },
+	};
+
+	// Check direct match first
+	const auto it = language_ids.find(language_code);
+	if (it != language_ids.cend())
+	{
+		m_language_id = static_cast<s32>(it->second);
+		return;
+	}
+
+	// Try to find closest match
+	for (const auto& [code, id] : language_ids)
+	{
+		if (language_code.startsWith(code))
+		{
+			m_language_id = static_cast<s32>(id);
+			return;
+		}
+	}
+
+	// Fallback to English (US)
+	m_language_id = static_cast<s32>(CELL_SYSUTIL_LANG_ENGLISH_US);
+}
+
+s32 gui_application::get_language_id()
+{
+	return m_language_id;
 }
 
 void gui_application::InitializeConnects()
@@ -528,6 +593,8 @@ void gui_application::InitializeCallbacks()
 				// Close main window in order to save its window state
 				m_main_window->close();
 			}
+
+			gui_log.notice("Quitting gui application");
 			quit();
 			return true;
 		}
@@ -890,6 +957,8 @@ void gui_application::InitializeCallbacks()
 			gui::utils::check_microphone_permission();
 		});
 	};
+
+	callbacks.make_video_source = [](){ return std::make_unique<qt_video_source_wrapper>(); };
 
 	Emu.SetCallbacks(std::move(callbacks));
 }

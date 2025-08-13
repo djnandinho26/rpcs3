@@ -26,9 +26,6 @@
 
 LOG_CHANNEL(cfg_log, "CFG");
 
-inline std::string sstr(const QString& _in) { return _in.toStdString(); }
-constexpr auto qstr = QString::fromStdString;
-
 cfg_input_configurations g_cfg_input_configs;
 
 inline bool CreateConfigFile(const QString& dir, const QString& name)
@@ -77,7 +74,7 @@ pad_settings_dialog::pad_settings_dialog(std::shared_ptr<gui_settings> gui_setti
 	if (game)
 	{
 		m_title_id = game->serial;
-		setWindowTitle(tr("Gamepad Settings: [%0] %1").arg(qstr(game->serial)).arg(qstr(game->name).simplified()));
+		setWindowTitle(tr("Gamepad Settings: [%0] %1").arg(QString::fromStdString(game->serial)).arg(QString::fromStdString(game->name).simplified()));
 	}
 	else
 	{
@@ -89,13 +86,13 @@ pad_settings_dialog::pad_settings_dialog(std::shared_ptr<gui_settings> gui_setti
 
 	if (m_title_id.empty())
 	{
-		const QString input_config_dir = qstr(rpcs3::utils::get_input_config_dir(m_title_id));
+		const QString input_config_dir = QString::fromStdString(rpcs3::utils::get_input_config_dir(m_title_id));
 		QStringList config_files = gui::utils::get_dir_entries(QDir(input_config_dir), QStringList() << "*.yml");
-		QString active_config_file = qstr(g_cfg_input_configs.active_configs.get_value(g_cfg_input_configs.global_key));
+		QString active_config_file = QString::fromStdString(g_cfg_input_configs.active_configs.get_value(g_cfg_input_configs.global_key));
 
 		if (!config_files.contains(active_config_file))
 		{
-			const QString default_config_file = qstr(g_cfg_input_configs.default_config);
+			const QString default_config_file = QString::fromStdString(g_cfg_input_configs.default_config);
 
 			if (!config_files.contains(default_config_file) && CreateConfigFile(input_config_dir, default_config_file))
 			{
@@ -114,7 +111,7 @@ pad_settings_dialog::pad_settings_dialog(std::shared_ptr<gui_settings> gui_setti
 	}
 	else
 	{
-		ui->chooseConfig->addItem(qstr(m_title_id));
+		ui->chooseConfig->addItem(QString::fromStdString(m_title_id));
 		ui->gb_config_files->setEnabled(false);
 	}
 
@@ -184,6 +181,13 @@ pad_settings_dialog::pad_settings_dialog(std::shared_ptr<gui_settings> gui_setti
 	ui->chooseClass->addItem(tr("Top Shot Elite"),     u32{CELL_PAD_FAKE_TYPE_TOP_SHOT_ELITE});
 	ui->chooseClass->addItem(tr("Top Shot Fearmaster"),u32{CELL_PAD_FAKE_TYPE_TOP_SHOT_FEARMASTER});
 	ui->chooseClass->addItem(tr("uDraw GameTablet"),   u32{CELL_PAD_FAKE_TYPE_GAMETABLET});
+	ui->chooseClass->addItem(tr("Copilot for Player 1"), u32{CELL_PAD_FAKE_TYPE_COPILOT_1});
+	ui->chooseClass->addItem(tr("Copilot for Player 2"), u32{CELL_PAD_FAKE_TYPE_COPILOT_2});
+	ui->chooseClass->addItem(tr("Copilot for Player 3"), u32{CELL_PAD_FAKE_TYPE_COPILOT_3});
+	ui->chooseClass->addItem(tr("Copilot for Player 4"), u32{CELL_PAD_FAKE_TYPE_COPILOT_4});
+	ui->chooseClass->addItem(tr("Copilot for Player 5"), u32{CELL_PAD_FAKE_TYPE_COPILOT_5});
+	ui->chooseClass->addItem(tr("Copilot for Player 6"), u32{CELL_PAD_FAKE_TYPE_COPILOT_6});
+	ui->chooseClass->addItem(tr("Copilot for Player 7"), u32{CELL_PAD_FAKE_TYPE_COPILOT_7});
 
 	connect(ui->chooseClass, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index)
 	{
@@ -450,6 +454,7 @@ void pad_settings_dialog::InitButtons()
 		{
 			std::lock_guard lock(m_input_mutex);
 			data = m_input_callback_data;
+			m_input_callback_data.values.clear();
 			m_input_callback_data.has_new_data = false;
 		}
 
@@ -499,17 +504,18 @@ void pad_settings_dialog::InitButtons()
 		// Enable Button Remapping
 		update_preview(data.pad_name, true, data.battery_level, data.preview_values[0], data.preview_values[1], data.preview_values[2], data.preview_values[3], data.preview_values[4], data.preview_values[5]);
 
-		if (data.val <= 0 || data.status == PadHandlerBase::connection::no_data)
+		// Handle Button Presses
+		for (const input_callback_data::input_values& values : data.values)
 		{
-			return;
-		}
+			if (values.val <= 0) continue;
 
-		cfg_log.notice("get_next_button_press: %s device %s button %s pressed with value %d", m_handler->m_type, data.pad_name, data.name, data.val);
+			cfg_log.notice("get_next_button_press: %s device %s button %s pressed with value %d", m_handler->m_type, data.pad_name, values.button_name, values.val);
 
-		if (m_button_id > button_ids::id_pad_begin && m_button_id < button_ids::id_pad_end && m_button_id == data.button_id)
-		{
-			m_cfg_entries[m_button_id].insert_key(data.name, m_enable_multi_binding);
-			ReactivateButtons();
+			if (m_button_id > button_ids::id_pad_begin && m_button_id < button_ids::id_pad_end && m_button_id == values.button_id)
+			{
+				m_cfg_entries[m_button_id].insert_key(values.button_name, m_enable_multi_binding);
+				ReactivateButtons();
+			}
 		}
 	});
 
@@ -560,35 +566,47 @@ void pad_settings_dialog::InitButtons()
 			const PadHandlerBase::gui_call_type call_type = first_call ? PadHandlerBase::gui_call_type::reset_input : PadHandlerBase::gui_call_type::normal;
 
 			const PadHandlerBase::connection status = m_handler->get_next_button_press(m_device_name,
-				[this, button_id](u16 val, std::string name, std::string pad_name, u32 battery_level, pad_preview_values preview_values)
+				[this, button_id](u16 val, std::string button_name, std::string pad_name, u32 battery_level, pad_preview_values preview_values)
 				{
 					std::lock_guard lock(m_input_mutex);
-					m_input_callback_data.val = val;
-					m_input_callback_data.name = std::move(name);
-					m_input_callback_data.pad_name = std::move(pad_name);
+					if (m_input_callback_data.pad_name != pad_name)
+					{
+						m_input_callback_data = {};
+						m_input_callback_data.pad_name = std::move(pad_name);
+					}
 					m_input_callback_data.battery_level = battery_level;
 					m_input_callback_data.preview_values = std::move(preview_values);
 					m_input_callback_data.has_new_data = true;
 					m_input_callback_data.status = PadHandlerBase::connection::connected;
-					m_input_callback_data.button_id = button_id;
+					if (val > 0)
+					{
+						m_input_callback_data.values.push_back(input_callback_data::input_values
+						{
+							.button_name = std::move(button_name),
+							.button_id = button_id,
+							.val = val,
+						});
+					}
 				},
-				[this, button_id](std::string pad_name)
+				[this](std::string pad_name)
 				{
 					std::lock_guard lock(m_input_mutex);
+					m_input_callback_data = {};
 					m_input_callback_data.pad_name = std::move(pad_name);
 					m_input_callback_data.has_new_data = true;
-					m_input_callback_data.status = PadHandlerBase::connection::disconnected;
-					m_input_callback_data.button_id = button_id;
 				},
 				call_type, buttons);
 
 			if (status == PadHandlerBase::connection::no_data)
 			{
 				std::lock_guard lock(m_input_mutex);
-				m_input_callback_data.pad_name = m_device_name;
+				if (m_input_callback_data.pad_name != m_device_name)
+				{
+					m_input_callback_data = {};
+					m_input_callback_data.pad_name = m_device_name;
+				}
 				m_input_callback_data.has_new_data = true;
 				m_input_callback_data.status = status;
-				m_input_callback_data.button_id = button_id;
 			}
 		}
 	});
@@ -673,7 +691,7 @@ void pad_settings_dialog::ReloadButtons()
 
 	auto updateButton = [this](int id, QPushButton* button, cfg::string* cfg_text)
 	{
-		const QString text = qstr(*cfg_text);
+		const QString text = QString::fromStdString(*cfg_text);
 		m_cfg_entries.insert(std::make_pair(id, pad_button{cfg_text, *cfg_text, text}));
 		button->setText(text);
 	};
@@ -1228,7 +1246,7 @@ void pad_settings_dialog::UpdateLabels(bool is_reset)
 		if (is_reset)
 		{
 			button.keys = *button.cfg_text;
-			button.text = qstr(button.keys);
+			button.text = QString::fromStdString(button.keys);
 		}
 
 		// The button has to contain at least one character, because it would be square'ish otherwise
@@ -1375,7 +1393,7 @@ void pad_settings_dialog::ChangeHandler()
 	}
 	else
 	{
-		handler = sstr(ui->chooseHandler->currentData().toString());
+		handler = ui->chooseHandler->currentData().toString().toStdString();
 		device = player_config->device.to_string();
 		buddy_device = player_config->buddy_device.to_string();
 	}
@@ -1493,12 +1511,12 @@ void pad_settings_dialog::ChangeHandler()
 	case pad_handler::skateboard:
 	case pad_handler::move:
 	{
-		const QString name_string = qstr(m_handler->name_string());
+		const QString name_string = QString::fromStdString(m_handler->name_string());
 		for (usz i = 1; i <= m_handler->max_devices(); i++) // Controllers 1-n in GUI
 		{
 			const QString device_name = name_string + QString::number(i);
 			const QString device_name_localized = GetLocalizedPadName(m_handler->m_type, device_name, i);
-			ui->chooseDevice->addItem(device_name_localized, QVariant::fromValue(pad_device_info{ sstr(device_name), device_name_localized, true }));
+			ui->chooseDevice->addItem(device_name_localized, QVariant::fromValue(pad_device_info{ device_name.toStdString(), device_name_localized, true }));
 		}
 		force_enable = true;
 		break;
@@ -1606,7 +1624,7 @@ void pad_settings_dialog::ChangeConfig(const QString& config_file)
 	if (config_file.isEmpty())
 		return;
 
-	m_config_file = sstr(config_file);
+	m_config_file = config_file.toStdString();
 
 	// Load in order to get the pad handlers
 	if (!g_cfg_input.load(m_title_id, m_config_file, true))
@@ -1628,15 +1646,15 @@ void pad_settings_dialog::ChangeConfig(const QString& config_file)
 	}
 
 	const u32 player_id = GetPlayerIndex();
-	const std::string handler = fmt::format("%s", g_cfg_input.player[player_id]->handler.get());
+	const QString q_handler = QString::fromStdString(g_cfg_input.player[player_id]->handler.to_string());
 
-	if (const QString q_handler = qstr(handler); ui->chooseHandler->findText(q_handler) >= 0)
+	if (const int index = ui->chooseHandler->findData(q_handler); index >= 0)
 	{
-		ui->chooseHandler->setCurrentText(q_handler);
+		ui->chooseHandler->setCurrentIndex(index);
 	}
 	else
 	{
-		cfg_log.error("Handler '%s' not found in handler dropdown.", handler);
+		cfg_log.error("Handler '%s' not found in handler dropdown.", q_handler);
 	}
 
 	// Force Refresh
@@ -1773,7 +1791,7 @@ void pad_settings_dialog::AddConfigFile()
 			QMessageBox::warning(this, tr("Error"), tr("Please choose a non-existing name"));
 			continue;
 		}
-		if (CreateConfigFile(qstr(rpcs3::utils::get_input_config_dir(m_title_id)), config_name))
+		if (CreateConfigFile(QString::fromStdString(rpcs3::utils::get_input_config_dir(m_title_id)), config_name))
 		{
 			ui->chooseConfig->addItem(config_name);
 			ui->chooseConfig->setCurrentText(config_name);
@@ -1799,12 +1817,12 @@ void pad_settings_dialog::RefreshHandlers()
 		const std::vector<std::string> str_inputs = g_cfg_input.player[0]->handler.to_list();
 		for (usz i = 0; i < str_inputs.size(); i++)
 		{
-			const QString item_data = qstr(str_inputs[i]);
+			const QString item_data = QString::fromStdString(str_inputs[i]);
 			ui->chooseHandler->addItem(GetLocalizedPadHandler(item_data, static_cast<pad_handler>(i)), QVariant(item_data));
 		}
 
-		const auto& handler = g_cfg_input.player[player_id]->handler;
-		ui->chooseHandler->setCurrentText(GetLocalizedPadHandler(qstr(handler.to_string()), handler));
+		const QString item_data = QString::fromStdString(g_cfg_input.player[player_id]->handler.to_string());
+		ui->chooseHandler->setCurrentIndex(ui->chooseHandler->findData(QVariant(item_data)));
 	}
 
 	ui->chooseHandler->blockSignals(false);
@@ -1932,7 +1950,9 @@ void pad_settings_dialog::SaveExit()
 			m_gui_settings->ShowConfirmationBox(
 				tr("Warning!"),
 				tr("The %0 button <b>%1</b> of <b>Player %2</b> was assigned at least twice.<br>Please consider adjusting the configuration.<br><br>Continue anyway?<br>")
-					.arg(qstr(g_cfg_input.player[player_id]->handler.to_string())).arg(qstr(key)).arg(player_id + 1),
+					.arg(QString::fromStdString(g_cfg_input.player[player_id]->handler.to_string()))
+					.arg(QString::fromStdString(key))
+					.arg(player_id + 1),
 				gui::ib_same_buttons, &result, this);
 
 			if (result == QMessageBox::No)

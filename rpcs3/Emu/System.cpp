@@ -137,6 +137,7 @@ void fmt_class_string<game_boot_result>::format(std::string& out, u64 arg)
 		case game_boot_result::decryption_error: return "Failed to decrypt content";
 		case game_boot_result::file_creation_error: return "Could not create important files";
 		case game_boot_result::firmware_missing: return "Firmware is missing";
+		case game_boot_result::firmware_version: return "Firmware is too old";
 		case game_boot_result::unsupported_disc_type: return "This disc type is not supported yet";
 		case game_boot_result::savestate_corrupted: return "Savestate data is corrupted or it's not an RPCS3 savestate";
 		case game_boot_result::savestate_version_unsupported: return "Savestate versioning data differs from your RPCS3 build.\nTry to use an older or newer RPCS3 build.\nEspecially if you know the build that created the savestate.";
@@ -168,10 +169,10 @@ void fmt_class_string<cfg_mode>::format(std::string& out, u64 arg)
 
 void Emulator::CallFromMainThread(std::function<void()>&& func, atomic_t<u32>* wake_up, bool track_emu_state, u64 stop_ctr, std::source_location src_loc) const
 {
-	std::function<void()> final_func = [this, before = IsStopped(), track_emu_state, thread_name = thread_ctrl::get_name(), src = src_loc
+	std::function<void()> final_func = [this, before = IsStopped(true), track_emu_state, thread_name = thread_ctrl::get_name(), src = src_loc
 		, count = (stop_ctr == umax ? +m_stop_ctr : stop_ctr), func = std::move(func)]
 	{
-		const bool call_it = (!track_emu_state || (count == m_stop_ctr && before == IsStopped()));
+		const bool call_it = (!track_emu_state || (count == m_stop_ctr && before == IsStopped(true)));
 
 		sys_log.trace("Callback from thread '%s' at [%s] is %s", thread_name, src, call_it ? "called" : "skipped");
 
@@ -184,13 +185,13 @@ void Emulator::CallFromMainThread(std::function<void()>&& func, atomic_t<u32>* w
 	m_cb.call_from_main_thread(std::move(final_func), wake_up);
 }
 
-void Emulator::BlockingCallFromMainThread(std::function<void()>&& func, std::source_location src_loc) const
+void Emulator::BlockingCallFromMainThread(std::function<void()>&& func, bool track_emu_state, std::source_location src_loc) const
 {
 	atomic_t<u32> wake_up = 0;
 
 	sys_log.trace("Blocking Callback from thread '%s' at [%s] is queued", thread_ctrl::get_name(), src_loc);
 
-	CallFromMainThread(std::move(func), &wake_up, true, umax, src_loc);
+	CallFromMainThread(std::move(func), &wake_up, track_emu_state, umax, src_loc);
 
 	bool logged = false;
 
@@ -302,6 +303,12 @@ static void fixup_settings(const psf::registry* _psf)
 			sys_log.error("The game does not support a resolution of %s, so we are forcing the resolution to %s.", resolution, new_resolution);
 			g_cfg.video.resolution.set(new_resolution);
 		}
+	}
+
+	if (g_cfg.net.net_active == np_internet_status::disabled && g_cfg.net.psn_status != np_psn_status::disabled)
+	{
+		sys_log.warning("Net status was set to disconnected so psn status was disabled");
+		g_cfg.net.psn_status.set(np_psn_status::disabled);
 	}
 }
 
@@ -751,84 +758,6 @@ void Emulator::SetUsr(const std::string& user)
 
 	m_usrid = id;
 	m_usr = user;
-}
-
-std::string Emulator::GetBackgroundPicturePath() const
-{
-	// Try to find a custom icon first
-	std::string path = fs::get_config_dir() + "/Icons/game_icons/" + GetTitleID() + "/PIC1.PNG";
-
-	if (fs::is_file(path))
-	{
-		return path;
-	}
-
-	std::string disc_dir = vfs::get("/dev_bdvd/PS3_GAME");
-
-	if (m_sfo_dir == disc_dir)
-	{
-		disc_dir.clear();
-	}
-
-	constexpr auto search_barrier = "barrier";
-
-	std::initializer_list<std::string> testees =
-	{
-		m_sfo_dir + "/PIC0.PNG",
-		m_sfo_dir + "/PIC1.PNG",
-		m_sfo_dir + "/PIC2.PNG",
-		m_sfo_dir + "/PIC3.PNG",
-		search_barrier,
-		!disc_dir.empty() ? (disc_dir + "/PIC0.PNG") : disc_dir,
-		!disc_dir.empty() ? (disc_dir + "/PIC1.PNG") : disc_dir,
-		!disc_dir.empty() ? (disc_dir + "/PIC2.PNG") : disc_dir,
-		!disc_dir.empty() ? (disc_dir + "/PIC3.PNG") : disc_dir,
-		search_barrier,
-		m_sfo_dir + "/ICON0.PNG",
-		search_barrier,
-		!disc_dir.empty() ? (disc_dir + "/ICON0.PNG") : disc_dir,
-	};
-
-	// Try to return the picture with the highest resultion
-	// Be naive and assume that its the one that spans over the most bytes
-	usz max_file_size = 0;
-	usz index_of_largest_file = umax;
-
-	for (usz index = 0; index < testees.size(); index++)
-	{
-		const std::string& path = testees.begin()[index];
-
-		fs::stat_t file_stat{};
-
-		if (path == search_barrier)
-		{
-			if (index_of_largest_file != umax)
-			{
-				// Found a file in the preferred image group
-				break;
-			}
-
-			continue;
-		}
-
-		if (path.empty() || !fs::get_stat(path, file_stat) || file_stat.is_directory)
-		{
-			continue;
-		}
-
-		if (max_file_size < file_stat.size)
-		{
-			max_file_size = file_stat.size;
-			index_of_largest_file = index;
-		}
-	}
-
-	if (index_of_largest_file == umax)
-	{
-		return {};
-	}
-
-	return testees.begin()[index_of_largest_file];
 }
 
 bool Emulator::BootRsxCapture(const std::string& path)
@@ -1600,6 +1529,10 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 			g_backup_cfg.from_string(g_cfg.to_string());
 		}
 
+		// Get localized title
+		m_localized_title = std::string(psf::get_string(_psf, fmt::format("TITLE_%02d", static_cast<s32>(g_cfg.sys.language.get())), m_title));
+		sys_log.notice("Localized Title: %s", GetLocalizedTitle());
+
 		// Set RTM usage
 		g_use_rtm = utils::has_rtm() && (((utils::has_mpx() && !utils::has_tsx_force_abort()) && g_cfg.core.enable_TSX == tsx_usage::enabled) || g_cfg.core.enable_TSX == tsx_usage::forced);
 
@@ -2033,7 +1966,6 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 		// Initialize performance monitor
 		g_fxo->init<named_thread<perf_monitor>>();
 
-		// Set title to actual disc title if necessary
 		const std::string disc_sfo_dir = vfs::get("/dev_bdvd/PS3_GAME/PARAM.SFO");
 
 		const auto disc_psf_obj = psf::load_object(disc_sfo_dir);
@@ -2168,6 +2100,21 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 			}
 		}
 
+		// Check firmware version
+		if (const std::string_view game_fw_version = psf::get_string(_psf, "PS3_SYSTEM_VER", ""); !game_fw_version.empty())
+		{
+			if (const std::string fw_version = utils::get_firmware_version(); fw_version.empty())
+			{
+				sys_log.warning("Firmware not installed. Skipping required firmware check. (title_id='%s', game_fw='%s')", m_title_id, game_fw_version);
+			}
+			else if (rpcs3::utils::version_is_bigger(game_fw_version, fw_version, m_title_id, true))
+			{
+				sys_log.error("The game's required firmware version is higher than the installed firmware's version. (title_id='%s', game_fw='%s', fw='%s')", m_title_id, game_fw_version, fw_version);
+				return game_boot_result::firmware_version;
+			}
+		}
+
+		// Set title to actual disc title if necessary
 		if (!disc_psf_obj.empty())
 		{
 			const auto bdvd_title = psf::get_string(disc_psf_obj, "TITLE");
@@ -2176,15 +2123,19 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 			{
 				sys_log.notice("Title was set from %s to %s", m_title, bdvd_title);
 				m_title = bdvd_title;
+
+				const auto localized_title = psf::get_string(disc_psf_obj, fmt::format("TITLE_%02d", static_cast<s32>(g_cfg.sys.language.get())), m_title);
+				if (m_localized_title != localized_title)
+				{
+					sys_log.notice("Localized Title was set from %s to %s", m_localized_title, localized_title);
+					m_localized_title = localized_title;
+				}
 			}
 		}
 
-		for (auto& c : m_title)
-		{
-			// Replace newlines with spaces
-			if (c == '\n')
-				c = ' ';
-		}
+		// Replace newlines with spaces
+		std::replace(m_title.begin(), m_title.end(), '\n', ' ');
+		std::replace(m_localized_title.begin(), m_localized_title.end(), '\n', ' ');
 
 		// Mount /host_root/ if necessary (special value)
 		if (g_cfg.vfs.host_root)
@@ -2525,6 +2476,11 @@ void Emulator::Run(bool start_playtime)
 	if (g_cfg.misc.prevent_display_sleep)
 	{
 		Emu.GetCallbacks().enable_display_sleep(false);
+	}
+
+	if (g_cfg.misc.enable_gamemode)
+	{
+		Emu.GetCallbacks().enable_gamemode(true);
 	}
 }
 
@@ -2922,7 +2878,7 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 		Emu.SetContinuousMode(false);
 	}
 
-	// Ensure no game has booted inbetween
+	// Ensure no game has booted in between
 	const auto guard = Emu.MakeEmulationStateGuard();
 
 	stop_counter_t old_emu_id{};
@@ -2969,8 +2925,20 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 
 	const u64 read_counter = get_sysutil_cb_manager_read_count();
 
-	if (old_state == system_state::frozen || savestate || !sysutil_send_system_cmd(0x0101 /* CELL_SYSUTIL_REQUEST_EXITGAME */, 0))
+	const bool force_termination = old_state == system_state::frozen || savestate;
+
+	if (!force_termination)
 	{
+		sys_log.notice("Requesting game to exit...");
+	}
+
+	if (force_termination || !sysutil_send_system_cmd(0x0101 /* CELL_SYSUTIL_REQUEST_EXITGAME */, 0))
+	{
+		if (!force_termination)
+		{
+			sys_log.warning("The game ignored the exit request. Forcing termination...");
+		}
+
 		// The callback has been rudely ignored, we have no other option but to force termination
 		Kill(allow_autoexit && !savestate, savestate);
 
@@ -2985,15 +2953,21 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 		return;
 	}
 
-	auto perform_kill = [read_counter, allow_autoexit, this, info = GetEmulationIdentifier()]()
+	sys_log.notice("The game was requested to exit. Waiting for its reaction...");
+
+	auto perform_kill = [read_counter, allow_autoexit, this, info = old_emu_id]()
 	{
 		bool read_sysutil_signal = false;
+		std::vector<stx::shared_ptr<named_thread<ppu_thread>>> ppu_thread_list;
 
-		u32 i = 100;
+		// If EXITGAME signal is not read, force kill after a second.
+		constexpr int loop_timeout_ms = 50;
+		int kill_timeout_ms = 1000;
+		int elapsed_ms = 0;
 
-		qt_events_aware_op(50, [&]()
+		qt_events_aware_op(loop_timeout_ms, [&]()
 		{
-			if (i >= 140)
+			if (elapsed_ms >= kill_timeout_ms)
 			{
 				return true;
 			}
@@ -3004,25 +2978,60 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 				Resume();
 			}, nullptr, true, read_counter);
 
+			// Check if the EXITGAME signal was read. We allow the game to terminate itself if that's the case.
 			if (!read_sysutil_signal && read_counter != get_sysutil_cb_manager_read_count())
 			{
-				i -= 100; // Grant 5 seconds (if signal is not read force kill after two second)
+				sys_log.notice("The game received the exit request. Waiting for it to terminate itself...");
+				kill_timeout_ms += 5000; // Grant a couple more seconds
 				read_sysutil_signal = true;
+
+				// Observe PPU threads state since this stage
+				idm::select<named_thread<ppu_thread>>([&](u32 id, cpu_thread&)
+				{
+					ppu_thread_list.emplace_back(idm::get_unlocked<named_thread<ppu_thread>>(id));
+				});
 			}
 
-			if (static_cast<u64>(info) != m_stop_ctr)
+			if (static_cast<u64>(info) != m_stop_ctr || Emu.IsStopped())
 			{
 				return true;
 			}
 
+			if (read_sysutil_signal && kill_timeout_ms - elapsed_ms <= 1'500)
+			{
+				int thread_exited_count = 0;
+
+				for (auto& ppu : ppu_thread_list)
+				{
+					if (ppu && (ppu->state & cpu_flag::exit || ppu->joiner == ppu_join_status::zombie))
+					{
+						ppu.reset();
+						thread_exited_count++;
+					}
+				}
+
+				if (thread_exited_count)
+				{
+					// If some threads exited since last check, grant additional 250 miliseconds
+					kill_timeout_ms += 250;
+					sys_log.notice("Threads were terminated.. increasing termination timeout (threads=%d)", thread_exited_count);
+				}
+			}
+
 			// Process events
-			i++;
+			elapsed_ms += loop_timeout_ms;
 			return false;
 		});
 
-		// An inevitable attempt to terminate the *current* emulation course will be issued after 7s
-		CallFromMainThread([allow_autoexit, this]()
+		// An inevitable attempt to terminate the *current* emulation course will be issued after the timeout was reached.
+		CallFromMainThread([this, allow_autoexit, elapsed_ms, read_sysutil_signal]()
 		{
+			if (Emu.IsStopped())
+			{
+				return;
+			}
+
+			sys_log.error("The game did not react to the exit request in time. Terminating manually... (read_sysutil_signal=%d, elapsed_ms=%d)", read_sysutil_signal, elapsed_ms);
 			Kill(allow_autoexit);
 		}, info);
 	};
@@ -3818,6 +3827,12 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 			// Always Enable display sleep, not only if it was prevented.
 			Emu.GetCallbacks().enable_display_sleep(true);
 
+			// Calling Gamemode Exit on Stop
+			if (g_cfg.misc.enable_gamemode)
+			{
+				Emu.GetCallbacks().enable_gamemode(false);
+			}
+
 			if (allow_autoexit)
 			{
 				Quit(g_cfg.misc.autoexit.get());
@@ -3899,7 +3914,7 @@ std::string Emulator::GetFormattedTitle(double fps) const
 {
 	rpcs3::title_format_data title_data;
 	title_data.format = g_cfg.misc.title_format.to_string();
-	title_data.title = GetTitle();
+	title_data.title = GetLocalizedTitle();
 	title_data.title_id = GetTitleID();
 	title_data.renderer = g_cfg.video.renderer.to_string();
 	title_data.vulkan_adapter = g_cfg.video.vk.adapter.to_string();
@@ -4186,6 +4201,31 @@ game_boot_result Emulator::AddGameToYml(const std::string& path)
 
 	sys_log.notice("Nothing to add in path %s (title_id=%s, category=%s)", path, title_id, cat);
 	return game_boot_result::invalid_file_or_folder;
+}
+
+u32 Emulator::RemoveGamesFromDir(const std::string& games_dir, const std::vector<std::string>& serials_to_remove_from_yml, bool save_on_disk)
+{
+	// List of serials (title id) to remove in "games.yml" file (if any)
+	std::vector<std::string> serials_to_remove = serials_to_remove_from_yml; // Initialize the list with the specified serials (if any)
+
+	if (!games_dir.empty()) // Skip an empty folder, otherwise we'll remove all games (which is not the intention)
+	{
+		// Scan game list to detect the titles belonging to auto-detection "games_dir" folder
+		for (const auto& [serial, path] : Emu.GetGamesConfig().get_games()) // Loop on game list file
+		{
+			// NOTE: Used starts_with(games_dir) instead of Emu.IsPathInsideDir(path, games_dir) due the latter would check
+			//       also the existence of the paths
+			//
+			if (path.starts_with(games_dir)) // If game path belongs to auto-detection "games_dir" folder, add the serial to the removal list
+			{
+				serials_to_remove.push_back(serial);
+			}
+		}
+	}
+
+	// Remove the specified and detected serials (title id) belonging to "games_dir" from the game list in memory
+	// or also in "games.yml" file according to the value of "save_on_disk"
+	return RemoveGames(serials_to_remove, save_on_disk);
 }
 
 u32 Emulator::RemoveGames(const std::vector<std::string>& title_id_list, bool save_on_disk)

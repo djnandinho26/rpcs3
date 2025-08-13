@@ -51,6 +51,7 @@ enum class game_boot_result : u32
 	decryption_error,
 	file_creation_error,
 	firmware_missing,
+	firmware_version,
 	unsupported_disc_type,
 	savestate_corrupted,
 	savestate_version_unsupported,
@@ -110,6 +111,8 @@ struct EmuCallbacks
 	std::function<bool()> display_sleep_control_supported;
 	std::function<void(bool)> enable_display_sleep;
 	std::function<void()> check_microphone_permissions;
+	std::function<std::unique_ptr<class video_source>()> make_video_source;
+	std::function<void(bool)> enable_gamemode;
 };
 
 namespace utils
@@ -141,6 +144,7 @@ class Emulator final
 	std::string m_path_original;
 	std::string m_title_id;
 	std::string m_title;
+	std::string m_localized_title;
 	std::string m_app_version;
 	std::string m_hash;
 	std::string m_cat;
@@ -207,7 +211,7 @@ public:
 		std::source_location src_loc = std::source_location::current()) const;
 
 	// Blocking call from the GUI thread
-	void BlockingCallFromMainThread(std::function<void()>&& func, std::source_location src_loc = std::source_location::current()) const;
+	void BlockingCallFromMainThread(std::function<void()>&& func, bool track_emu_state = true, std::source_location src_loc = std::source_location::current()) const;
 
 	enum class stop_counter_t : u64{};
 
@@ -279,6 +283,11 @@ public:
 		return m_title;
 	}
 
+	const std::string& GetLocalizedTitle() const
+	{
+		return m_localized_title;
+	}
+
 	const std::string GetTitleAndTitleID() const
 	{
 		return m_title + (m_title_id.empty() ? "" : " [" + m_title_id + "]");
@@ -331,8 +340,6 @@ public:
 	}
 
 	void SetUsr(const std::string& user);
-
-	std::string GetBackgroundPicturePath() const;
 
 	u64 GetPauseTime() const
 	{
@@ -448,6 +455,7 @@ public:
 	u32 AddGamesFromDir(const std::string& path);
 	game_boot_result AddGame(const std::string& path);
 	game_boot_result AddGameToYml(const std::string& path);
+	u32 RemoveGamesFromDir(const std::string& games_dir, const std::vector<std::string>& serials_to_remove_from_yml = {}, bool save_on_disk = true);
 	u32 RemoveGames(const std::vector<std::string>& title_id_list, bool save_on_disk = true);
 	game_boot_result RemoveGameFromYml(const std::string& title_id);
 

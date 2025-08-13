@@ -38,9 +38,11 @@
 #include "shortcut_dialog.h"
 #include "system_cmd_dialog.h"
 #include "emulated_pad_settings_dialog.h"
+#include "emulated_logitech_g27_settings_dialog.h"
 #include "basic_mouse_settings_dialog.h"
 #include "vfs_tool_dialog.h"
 #include "welcome_dialog.h"
+#include "music_player_dialog.h"
 
 #include <thread>
 #include <unordered_set>
@@ -100,8 +102,6 @@ extern atomic_t<bool> g_user_asked_for_frame_capture;
 
 class CPUDisAsm;
 std::shared_ptr<CPUDisAsm> make_basic_ppu_disasm();
-
-inline std::string sstr(const QString& _in) { return _in.toStdString(); }
 
 extern void qt_events_aware_op(int repeat_duration_ms, std::function<bool()> wrapped_op)
 {
@@ -226,49 +226,6 @@ bool main_window::Init([[maybe_unused]] bool with_cli_boot)
 	ui->sysPauseAct->setEnabled(enable_play_last);
 	ui->toolbar_start->setEnabled(enable_play_last);
 
-	// create tool buttons for the taskbar thumbnail
-#ifdef HAS_QT_WIN_STUFF
-	m_thumb_bar = new QWinThumbnailToolBar(this);
-	m_thumb_bar->setWindow(windowHandle());
-
-	m_thumb_playPause = new QWinThumbnailToolButton(m_thumb_bar);
-	m_thumb_playPause->setToolTip(start_tooltip);
-	m_thumb_playPause->setIcon(m_icon_thumb_play);
-	m_thumb_playPause->setEnabled(enable_play_last);
-
-	m_thumb_stop = new QWinThumbnailToolButton(m_thumb_bar);
-	m_thumb_stop->setToolTip(tr("Stop"));
-	m_thumb_stop->setIcon(m_icon_thumb_stop);
-	m_thumb_stop->setEnabled(false);
-
-	m_thumb_restart = new QWinThumbnailToolButton(m_thumb_bar);
-	m_thumb_restart->setToolTip(tr("Restart"));
-	m_thumb_restart->setIcon(m_icon_thumb_restart);
-	m_thumb_restart->setEnabled(false);
-
-	m_thumb_bar->addButton(m_thumb_playPause);
-	m_thumb_bar->addButton(m_thumb_stop);
-	m_thumb_bar->addButton(m_thumb_restart);
-
-	RepaintThumbnailIcons();
-
-	connect(m_thumb_stop, &QWinThumbnailToolButton::clicked, this, []()
-	{
-		gui_log.notice("User clicked the stop button on thumbnail toolbar");
-		Emu.GracefulShutdown(false, true);
-	});
-	connect(m_thumb_restart, &QWinThumbnailToolButton::clicked, this, []()
-	{
-		gui_log.notice("User clicked the restart button on thumbnail toolbar");
-		Emu.Restart();
-	});
-	connect(m_thumb_playPause, &QWinThumbnailToolButton::clicked, this, [this]()
-	{
-		gui_log.notice("User clicked the playPause button on thumbnail toolbar");
-		OnPlayOrPause();
-	});
-#endif
-
 	// RPCS3 Updater
 
 	QMenu* download_menu = new QMenu(tr("Update Available!"));
@@ -354,12 +311,12 @@ void main_window::update_gui_pad_thread()
 
 QString main_window::GetCurrentTitle()
 {
-	QString title = qstr(Emu.GetTitleAndTitleID());
-	if (title.isEmpty())
+	std::string title = Emu.GetTitleAndTitleID();
+	if (title.empty())
 	{
-		title = qstr(Emu.GetLastBoot());
+		title = Emu.GetLastBoot();
 	}
-	return title;
+	return QString::fromStdString(title);
 }
 
 // returns appIcon
@@ -538,6 +495,9 @@ void main_window::show_boot_error(game_boot_result status)
 	case game_boot_result::still_running:
 		message = tr("A game or PS3 application is still running or has yet to be fully stopped.");
 		break;
+	case game_boot_result::firmware_version:
+		message = tr("The game or PS3 application needs a more recent firmware version.");
+		break;
 	case game_boot_result::firmware_missing: // Handled elsewhere
 	case game_boot_result::already_added: // Handled elsewhere
 	case game_boot_result::currently_restricted:
@@ -633,7 +593,7 @@ void main_window::BootElf()
 	// game folder in case of having e.g. a Game Folder with collected links to elf files.
 	// Don't set last path earlier in case of cancelled dialog
 	m_gui_settings->SetValue(gui::fd_boot_elf, file_path);
-	const std::string path = sstr(QFileInfo(file_path).absoluteFilePath());
+	const std::string path = QFileInfo(file_path).absoluteFilePath().toStdString();
 
 	gui_log.notice("Booting from BootElf...");
 	Boot(path, "", true, true);
@@ -673,7 +633,7 @@ void main_window::BootTest()
 		return;
 	}
 
-	const std::string path = sstr(QFileInfo(file_path).absoluteFilePath());
+	const std::string path = QFileInfo(file_path).absoluteFilePath().toStdString();
 
 	gui_log.notice("Booting from BootTest...");
 	Boot(path, "", true);
@@ -689,7 +649,7 @@ void main_window::BootSavestate()
 		stopped = true;
 	}
 
-	const QString file_path = QFileDialog::getOpenFileName(this, tr("Select Savestate To Boot"), qstr(fs::get_config_dir() + "savestates/"), tr(
+	const QString file_path = QFileDialog::getOpenFileName(this, tr("Select Savestate To Boot"), QString::fromStdString(fs::get_config_dir() + "savestates/"), tr(
 		"Savestate files (*.SAVESTAT *.SAVESTAT.zst *.SAVESTAT.gz);;"
 		"All files (*.*)"),
 		Q_NULLPTR, QFileDialog::DontResolveSymlinks);
@@ -703,7 +663,7 @@ void main_window::BootSavestate()
 		return;
 	}
 
-	const std::string path = sstr(QFileInfo(file_path).absoluteFilePath());
+	const std::string path = QFileInfo(file_path).absoluteFilePath().toStdString();
 
 	gui_log.notice("Booting from BootSavestate...");
 	Boot(path, "", true);
@@ -734,7 +694,7 @@ void main_window::BootGame()
 	m_gui_settings->SetValue(gui::fd_boot_game, QFileInfo(dir_path).path());
 
 	gui_log.notice("Booting from BootGame...");
-	Boot(sstr(dir_path), "", false, true);
+	Boot(dir_path.toStdString(), "", false, true);
 }
 
 void main_window::BootVSH()
@@ -755,7 +715,7 @@ void main_window::BootRsxCapture(std::string path)
 			is_stopped = true;
 		}
 
-		const QString file_path = QFileDialog::getOpenFileName(this, tr("Select RSX Capture"), qstr(fs::get_config_dir() + "captures/"), tr("RRC files (*.rrc *.RRC *.rrc.gz *.RRC.GZ);;All files (*.*)"));
+		const QString file_path = QFileDialog::getOpenFileName(this, tr("Select RSX Capture"), QString::fromStdString(fs::get_config_dir() + "captures/"), tr("RRC files (*.rrc *.RRC *.rrc.gz *.RRC.GZ);;All files (*.*)"));
 
 		if (file_path.isEmpty())
 		{
@@ -765,7 +725,7 @@ void main_window::BootRsxCapture(std::string path)
 			}
 			return;
 		}
-		path = sstr(file_path);
+		path = file_path.toStdString();
 	}
 
 	if (!m_gui_settings->GetBootConfirmation(this))
@@ -795,7 +755,7 @@ bool main_window::InstallFileInExData(const std::string& extension, const QStrin
 	// Copy file atomically with thread/process-safe error checking for file size
 	const std::string to_path = rpcs3::utils::get_hdd0_dir() + "/home/" + Emu.GetUsr() + "/exdata/" + filename.substr(0, filename.find_last_of('.'));
 	fs::pending_file to(to_path + "." + extension);
-	fs::file from(sstr(path));
+	fs::file from(path.toStdString());
 
 	if (!to.file || !from)
 	{
@@ -917,7 +877,7 @@ bool main_window::InstallPackages(QStringList file_paths, bool from_boot)
 			if (!info.changelog.isEmpty())
 			{
 				mb.setInformativeText(tr("To see the changelog, please click \"Show Details\"."));
-				mb.setDetailedText(tr("%0").arg(info.changelog));
+				mb.setDetailedText(info.changelog);
 
 				// Smartass hack to make the unresizeable message box wide enough for the changelog
 				const int log_width = QLabel(info.changelog).sizeHint().width();
@@ -946,7 +906,7 @@ bool main_window::InstallPackages(QStringList file_paths, bool from_boot)
 		for (const QString& file : file_paths.filter(QRegularExpression(pattern, QRegularExpression::PatternOption::CaseInsensitiveOption)))
 		{
 			const QFileInfo file_info(file);
-			const std::string filename = sstr(file_info.fileName());
+			const std::string filename = file_info.fileName().toStdString();
 
 			if (InstallFileInExData(extension, file, filename))
 			{
@@ -1092,7 +1052,7 @@ bool main_window::HandlePackageInstallation(QStringList file_paths, bool from_bo
 
 	for (const compat::package_info& info : packages)
 	{
-		readers.emplace_back(sstr(info.path));
+		readers.emplace_back(info.path.toStdString());
 	}
 
 	std::deque<std::string> bootable_paths;
@@ -1320,7 +1280,7 @@ void main_window::ExtractMSELF()
 	if (!dir.isEmpty())
 	{
 		m_gui_settings->SetValue(gui::fd_ext_mself, QFileInfo(file_path).path());
-		extract_mself(sstr(file_path), sstr(dir) + '/');
+		extract_mself(file_path.toStdString(), dir.toStdString() + '/');
 	}
 }
 
@@ -1414,7 +1374,7 @@ void main_window::ExtractTar()
 		const QString& file = *files_it;
 
 		// Do not abort on failure here, in case the user selected a wrong file in multi-selection while the rest are valid
-		if (!extract_tar(sstr(file), sstr(dir) + '/'))
+		if (!extract_tar(file.toStdString(), dir.toStdString() + '/'))
 		{
 			if (error.isEmpty())
 			{
@@ -1465,7 +1425,7 @@ void main_window::HandlePupInstallation(const QString& file_path, const QString&
 
 	m_gui_settings->SetValue(gui::fd_install_pup, QFileInfo(file_path).path());
 
-	const std::string path = sstr(file_path);
+	const std::string path = file_path.toStdString();
 
 	fs::file pup_f(path);
 	if (!pup_f)
@@ -1553,7 +1513,7 @@ void main_window::HandlePupInstallation(const QString& file_path, const QString&
 	{
 		// Extract only mode, extract direct TAR entries to a user directory
 
-		if (!vfs::mount("/pup_extract", sstr(dir_path) + '/'))
+		if (!vfs::mount("/pup_extract", dir_path.toStdString() + '/'))
 		{
 			gui_log.error("Error while extracting firmware: Failed to mount '%s'", dir_path);
 			critical(tr("Firmware extraction failed: VFS mounting failed."));
@@ -1608,7 +1568,7 @@ void main_window::HandlePupInstallation(const QString& file_path, const QString&
 	}
 
 	if (version_string < cur_version &&
-		QMessageBox::question(this, tr("RPCS3 Firmware Installer"), tr("Old firmware detected.\nThe newest firmware version is %1 and you are trying to install version %2\nContinue installation?").arg(QString::fromUtf8(cur_version.data(), ::size32(cur_version)), qstr(version_string)),
+		QMessageBox::question(this, tr("RPCS3 Firmware Installer"), tr("Old firmware detected.\nThe newest firmware version is %1 and you are trying to install version %2\nContinue installation?").arg(QString::fromUtf8(cur_version.data(), ::size32(cur_version)), QString::fromStdString(version_string)),
 			QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::No)
 	{
 		return;
@@ -1618,7 +1578,7 @@ void main_window::HandlePupInstallation(const QString& file_path, const QString&
 	{
 		gui_log.warning("Reinstalling firmware: old=%s, new=%s", installed, version_string);
 
-		if (QMessageBox::question(this, tr("RPCS3 Firmware Installer"), tr("Firmware of version %1 has already been installed.\nOverwrite current installation with version %2?").arg(qstr(installed), qstr(version_string)),
+		if (QMessageBox::question(this, tr("RPCS3 Firmware Installer"), tr("Firmware of version %1 has already been installed.\nOverwrite current installation with version %2?").arg(QString::fromStdString(installed), QString::fromStdString(version_string)),
 			QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::No)
 		{
 			gui_log.warning("Reinstallation of firmware aborted.");
@@ -1629,7 +1589,7 @@ void main_window::HandlePupInstallation(const QString& file_path, const QString&
 	// Remove possibly PS3 fonts from database
 	QFontDatabase::removeAllApplicationFonts();
 
-	progress_dialog pdlg(tr("RPCS3 Firmware Installer"), tr("Installing firmware version %1\nPlease wait...").arg(qstr(version_string)), tr("Cancel"), 0, static_cast<int>(update_filenames.size()), false, this);
+	progress_dialog pdlg(tr("RPCS3 Firmware Installer"), tr("Installing firmware version %1\nPlease wait...").arg(QString::fromStdString(version_string)), tr("Cancel"), 0, static_cast<int>(update_filenames.size()), false, this);
 	pdlg.show();
 
 	// Used by tar_object::extract() as destination directory
@@ -1741,10 +1701,10 @@ void main_window::DecryptSPRXLibraries()
 {
 	QString path_last_sprx = m_gui_settings->GetValue(gui::fd_decrypt_sprx).toString();
 
-	if (!fs::is_dir(sstr(path_last_sprx)))
+	if (!fs::is_dir(path_last_sprx.toStdString()))
 	{
 		// Default: redirect to userland firmware SPRX directory
-		path_last_sprx = qstr(g_cfg_vfs.get_dev_flash() + "sys/external");
+		path_last_sprx = QString::fromStdString(g_cfg_vfs.get_dev_flash() + "sys/external");
 	}
 
 	const QStringList modules = QFileDialog::getOpenFileNames(this, tr("Select binary files"), path_last_sprx, tr("All Binaries (*.bin *.BIN *.self *.SELF *.sprx *.SPRX *.sdat *.SDAT *.edat *.EDAT);;"
@@ -1772,14 +1732,14 @@ void main_window::DecryptSPRXLibraries()
 		const std::string filename = path.substr(path.find_last_of(fs::delim) + 1);
 
 		const QString hint = tr("Hint: KLIC (KLicense key) is a 16-byte long string. (32 hexadecimal characters, can be prefixed with \"KLIC=0x\" from the log message)"
-			"\nAnd is logged with some sceNpDrm* functions when the game/application which owns \"%0\" is running.").arg(qstr(filename));
+			"\nAnd is logged with some sceNpDrm* functions when the game/application which owns \"%0\" is running.").arg(QString::fromStdString(filename));
 
 		if (repeat_count >= 2)
 		{
 			gui_log.error("Failed to decrypt %s with specified KLIC, retrying.\n%s", path, hint);
 		}
 
-		input_dialog* dlg = new input_dialog(39, "", tr("Enter KLIC of %0").arg(qstr(filename)),
+		input_dialog* dlg = new input_dialog(39, "", tr("Enter KLIC of %0").arg(QString::fromStdString(filename)),
 			repeat_count >= 2 ? tr("Decryption failed with provided KLIC.\n%0").arg(hint) : tr("Hexadecimal value."), "KLIC=0x00000000000000000000000000000000", this);
 
 		QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
@@ -1797,7 +1757,7 @@ void main_window::DecryptSPRXLibraries()
 
 		connect(dlg, &QDialog::accepted, this, [this, iterate, dlg, mod_index, decrypter, repeat_count]()
 		{
-			std::string text = sstr(dlg->get_input_text());
+			std::string text = dlg->get_input_text().toStdString();
 
 			if (usz new_index = decrypter->decrypt(std::move(text)); !decrypter->done())
 			{
@@ -1865,19 +1825,6 @@ void main_window::RepaintThumbnailIcons()
 	{
 		return gui::utils::get_colorized_icon(QPixmap::fromImage(gui::utils::get_opaque_image_area(path)), Qt::black, new_color);
 	};
-
-#ifdef HAS_QT_WIN_STUFF
-	if (!m_thumb_bar) return;
-
-	m_icon_thumb_play = icon(":/Icons/play.png");
-	m_icon_thumb_pause = icon(":/Icons/pause.png");
-	m_icon_thumb_stop = icon(":/Icons/stop.png");
-	m_icon_thumb_restart = icon(":/Icons/restart.png");
-
-	m_thumb_playPause->setIcon(Emu.IsRunning() || Emu.IsStarting() ? m_icon_thumb_pause : m_icon_thumb_play);
-	m_thumb_stop->setIcon(m_icon_thumb_stop);
-	m_thumb_restart->setIcon(m_icon_thumb_restart);
-#endif
 }
 
 void main_window::RepaintToolBarIcons()
@@ -1968,12 +1915,6 @@ void main_window::OnEmuRun(bool /*start_playtime*/)
 
 	m_debugger_frame->EnableButtons(true);
 
-#ifdef HAS_QT_WIN_STUFF
-	m_thumb_stop->setToolTip(stop_tooltip);
-	m_thumb_restart->setToolTip(restart_tooltip);
-	m_thumb_playPause->setToolTip(pause_tooltip);
-	m_thumb_playPause->setIcon(m_icon_thumb_pause);
-#endif
 	ui->sysPauseAct->setText(tr("&Pause"));
 	ui->sysPauseAct->setIcon(m_icon_pause);
 	ui->toolbar_start->setIcon(m_icon_pause);
@@ -1993,12 +1934,6 @@ void main_window::OnEmuResume() const
 	const QString pause_tooltip = tr("Pause %0").arg(title);
 	const QString stop_tooltip = tr("Stop %0").arg(title);
 
-#ifdef HAS_QT_WIN_STUFF
-	m_thumb_stop->setToolTip(stop_tooltip);
-	m_thumb_restart->setToolTip(restart_tooltip);
-	m_thumb_playPause->setToolTip(pause_tooltip);
-	m_thumb_playPause->setIcon(m_icon_thumb_pause);
-#endif
 	ui->sysPauseAct->setText(tr("&Pause"));
 	ui->sysPauseAct->setIcon(m_icon_pause);
 	ui->toolbar_start->setIcon(m_icon_pause);
@@ -2012,10 +1947,6 @@ void main_window::OnEmuPause() const
 	const QString title = GetCurrentTitle();
 	const QString resume_tooltip = tr("Resume %0").arg(title);
 
-#ifdef HAS_QT_WIN_STUFF
-	m_thumb_playPause->setToolTip(resume_tooltip);
-	m_thumb_playPause->setIcon(m_icon_thumb_play);
-#endif
 	ui->sysPauseAct->setText(tr("&Resume"));
 	ui->sysPauseAct->setIcon(m_icon_play);
 	ui->toolbar_start->setIcon(m_icon_play);
@@ -2036,10 +1967,6 @@ void main_window::OnEmuStop()
 
 	ui->sysPauseAct->setText(tr("&Play"));
 	ui->sysPauseAct->setIcon(m_icon_play);
-#ifdef HAS_QT_WIN_STUFF
-	m_thumb_playPause->setToolTip(play_tooltip);
-	m_thumb_playPause->setIcon(m_icon_thumb_play);
-#endif
 
 	EnableMenus(false);
 
@@ -2058,10 +1985,6 @@ void main_window::OnEmuStop()
 		ui->toolbar_start->setText(tr("Restart"));
 		ui->toolbar_start->setToolTip(restart_tooltip);
 		ui->sysRebootAct->setEnabled(true);
-#ifdef HAS_QT_WIN_STUFF
-		m_thumb_restart->setToolTip(restart_tooltip);
-		m_thumb_restart->setEnabled(true);
-#endif
 	}
 
 	ui->batchRemoveShaderCachesAct->setEnabled(true);
@@ -2103,10 +2026,7 @@ void main_window::OnEmuReady() const
 	const QString play_tooltip = tr("Play %0").arg(title);
 
 	m_debugger_frame->EnableButtons(true);
-#ifdef HAS_QT_WIN_STUFF
-	m_thumb_playPause->setToolTip(play_tooltip);
-	m_thumb_playPause->setIcon(m_icon_thumb_play);
-#endif
+
 	ui->sysPauseAct->setText(tr("&Play"));
 	ui->sysPauseAct->setIcon(m_icon_play);
 	ui->toolbar_start->setIcon(m_icon_play);
@@ -2130,13 +2050,6 @@ void main_window::OnEmuReady() const
 
 void main_window::EnableMenus(bool enabled) const
 {
-	// Thumbnail Buttons
-#ifdef HAS_QT_WIN_STUFF
-	m_thumb_playPause->setEnabled(enabled);
-	m_thumb_stop->setEnabled(enabled);
-	m_thumb_restart->setEnabled(enabled);
-#endif
-
 	// Toolbar
 	ui->toolbar_start->setEnabled(enabled);
 	ui->toolbar_stop->setEnabled(enabled);
@@ -2413,9 +2326,9 @@ void main_window::RepaintGui()
 	Q_EMIT RequestDialogRepaint();
 }
 
-void main_window::RetranslateUI(const QStringList& language_codes, const QString& language)
+void main_window::RetranslateUI(const QStringList& language_codes, const QString& language_code)
 {
-	UpdateLanguageActions(language_codes, language);
+	UpdateLanguageActions(language_codes, language_code);
 
 	ui->retranslateUi(this);
 
@@ -2497,17 +2410,26 @@ void main_window::ShowOptionalGamePreparations(const QString& title, const QStri
 			locations.insert(gui::utils::shortcut_location::applications);
 		}
 
+		if (locations.empty() && !create_caches)
+		{
+			return;
+		}
+
 		std::vector<game_info> game_data;
+		std::vector<game_info> game_data_shortcuts;
 
 		for (const auto& [boot_path, title_id] : paths)
 		{
 			for (const game_info& gameinfo : m_game_list_frame->GetGameInfo())
 			{
-				if (gameinfo && gameinfo->info.serial == sstr(title_id))
+				if (gameinfo && gameinfo->info.serial == title_id.toStdString())
 				{
 					if (Emu.IsPathInsideDir(boot_path, gameinfo->info.path))
 					{
-						m_game_list_frame->CreateShortcuts(gameinfo, locations);
+						if (!locations.empty())
+						{
+							game_data_shortcuts.push_back(gameinfo);
+						}
 
 						if (create_caches)
 						{
@@ -2518,6 +2440,11 @@ void main_window::ShowOptionalGamePreparations(const QString& title, const QStri
 					break;
 				}
 			}
+		}
+		
+		if (!game_data_shortcuts.empty() && !locations.empty())
+		{
+			m_game_list_frame->CreateShortcuts(game_data_shortcuts, locations);
 		}
 
 		if (!game_data.empty())
@@ -2608,7 +2535,7 @@ void main_window::CreateConnects()
 		}
 
 		// Only select one folder for now
-		QString dir = QFileDialog::getExistingDirectory(this, tr("Select a folder containing one or more games"), qstr(fs::get_config_dir()), QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+		QString dir = QFileDialog::getExistingDirectory(this, tr("Select a folder containing one or more games"), QString::fromStdString(fs::get_config_dir()), QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
 		if (dir.isEmpty())
 		{
 			return;
@@ -2716,7 +2643,7 @@ void main_window::CreateConnects()
 		}
 
 		// Get new filename from title and title ID but simplified
-		QString log_filename_q = qstr(Emu.GetTitleID().empty() ? "RPCS3" : Emu.GetTitleAndTitleID());
+		QString log_filename_q = QString::fromStdString(Emu.GetTitleID().empty() ? "RPCS3" : Emu.GetTitleAndTitleID());
 		ensure(!log_filename_q.isEmpty());
 
 		// Replace unfitting characters
@@ -2768,7 +2695,7 @@ void main_window::CreateConnects()
 
 		if (archived_stat.size)
 		{
-			const QString dir_path = QFileDialog::getExistingDirectory(this, tr("Select RPCS3's log saving location (saving %0)").arg(qstr(log_filename + ".log.gz")), path_last_log, QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+			const QString dir_path = QFileDialog::getExistingDirectory(this, tr("Select RPCS3's log saving location (saving %0)").arg(QString::fromStdString(log_filename + ".log.gz")), path_last_log, QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
 
 			if (dir_path.isEmpty())
 			{
@@ -2791,7 +2718,7 @@ void main_window::CreateConnects()
 			return;
 		}
 
-		const QString dir_path = QFileDialog::getExistingDirectory(this, tr("Select RPCS3's log saving location (saving %0)").arg(qstr(log_filename + ".log")), path_last_log, QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+		const QString dir_path = QFileDialog::getExistingDirectory(this, tr("Select RPCS3's log saving location (saving %0)").arg(QString::fromStdString(log_filename + ".log")), path_last_log, QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
 
 		if (dir_path.isEmpty())
 		{
@@ -2973,6 +2900,16 @@ void main_window::CreateConnects()
 		emulated_pad_settings_dialog* dlg = new emulated_pad_settings_dialog(emulated_pad_settings_dialog::pad_type::topshotfearmaster, this);
 		dlg->show();
 	});
+
+#ifndef HAVE_SDL3
+	ui->confLogitechG27Act->setVisible(false);
+#else
+	connect(ui->confLogitechG27Act, &QAction::triggered, this, [this]
+	{
+		emulated_logitech_g27_settings_dialog* dlg = new emulated_logitech_g27_settings_dialog(this);
+		dlg->show();
+	});
+#endif
 
 	connect(ui->actionBasic_Mouse, &QAction::triggered, this, [this]
 	{
@@ -3216,6 +3153,12 @@ void main_window::CreateConnects()
 		dlg->show();
 	});
 
+	connect(ui->actionMusic_Player, &QAction::triggered, this, [this]()
+	{
+		music_player_dialog* dlg = new music_player_dialog(this);
+		dlg->open();
+	});
+
 	connect(ui->showDebuggerAct, &QAction::triggered, this, [this](bool checked)
 	{
 		checked ? m_debugger_frame->show() : m_debugger_frame->hide();
@@ -3300,7 +3243,7 @@ void main_window::CreateConnects()
 			const QStringList categories = get_cats(act, id);
 			for (const game_info& game : m_game_list_frame->GetGameInfo())
 			{
-				if (game && categories.contains(qstr(game->info.category))) count++;
+				if (game && categories.contains(QString::fromStdString(game->info.category))) count++;
 			}
 			act->setText(QString("%0 (%1)").arg(text).arg(count));
 		};
@@ -3366,6 +3309,7 @@ void main_window::CreateConnects()
 		ResizeIcons(index);
 	});
 
+	connect(ui->actionPreferGameDataIcons, &QAction::triggered, m_game_list_frame, &game_list_frame::SetPreferGameDataIcons);
 	connect(ui->showCustomIconsAct, &QAction::triggered, m_game_list_frame, &game_list_frame::SetShowCustomIcons);
 	connect(ui->playHoverGifsAct, &QAction::triggered, m_game_list_frame, &game_list_frame::SetPlayHoverGifs);
 
@@ -3526,14 +3470,14 @@ void main_window::CreateDockWindows()
 
 				if (title_and_title_id == Emu.GetTitleAndTitleID()) // This should usually not cause trouble, but feel free to improve.
 				{
-					tooltip = tr("Restart %0").arg(qstr(title_and_title_id));
+					tooltip = tr("Restart %0").arg(QString::fromStdString(title_and_title_id));
 
 					ui->toolbar_start->setIcon(m_icon_restart);
 					ui->toolbar_start->setText(tr("Restart"));
 				}
 				else
 				{
-					tooltip = tr("Play %0").arg(qstr(title_and_title_id));
+					tooltip = tr("Play %0").arg(QString::fromStdString(title_and_title_id));
 
 					ui->toolbar_start->setIcon(m_icon_play);
 					ui->toolbar_start->setText(tr("Play"));
@@ -3570,16 +3514,10 @@ void main_window::CreateDockWindows()
 
 			ui->toolbar_start->setEnabled(enable_play_buttons);
 			ui->sysPauseAct->setEnabled(enable_play_buttons);
-#ifdef HAS_QT_WIN_STUFF
-			m_thumb_playPause->setEnabled(enable_play_buttons);
-#endif
 
 			if (!tooltip.isEmpty())
 			{
 				ui->toolbar_start->setToolTip(tooltip);
-#ifdef HAS_QT_WIN_STUFF
-				m_thumb_playPause->setToolTip(tooltip);
-#endif
 			}
 		}
 
@@ -3665,6 +3603,7 @@ void main_window::ConfigureGuiFromSettings()
 	m_game_list_frame->SetShowHidden(ui->showHiddenEntriesAct->isChecked()); // prevent GetValue in m_game_list_frame->LoadSettings
 
 	ui->showCompatibilityInGridAct->setChecked(m_gui_settings->GetValue(gui::gl_draw_compat).toBool());
+	ui->actionPreferGameDataIcons->setChecked(m_gui_settings->GetValue(gui::gl_pref_gd_icon).toBool());
 	ui->showCustomIconsAct->setChecked(m_gui_settings->GetValue(gui::gl_custom_icon).toBool());
 	ui->playHoverGifsAct->setChecked(m_gui_settings->GetValue(gui::gl_hover_gifs).toBool());
 
@@ -3729,7 +3668,7 @@ void main_window::RemoveAllCaches()
 
 	for (const game_info& game : m_game_list_frame->GetGameInfo()) // Loop on detected games
 	{
-		if (game && qstr(game->info.category) != cat::cat_ps3_os && fs::exists(cache_base_dir + game->info.serial)) // If not OS category and cache exists
+		if (game && QString::fromStdString(game->info.category) != cat::cat_ps3_os && fs::exists(cache_base_dir + game->info.serial)) // If not OS category and cache exists
 		{
 			caches_count++;
 
@@ -3785,7 +3724,7 @@ void main_window::CleanUpGameList()
 		for (const game_info& game : m_game_list_frame->GetGameInfo()) // Loop on detected games
 		{
 			// If Disc Game and its serial is found in game list file
-			if (game && qstr(game->info.category) == cat::cat_disc_game && game->info.serial == serial)
+			if (game && QString::fromStdString(game->info.category) == cat::cat_disc_game && game->info.serial == serial)
 			{
 				found = true;
 				break;
@@ -3817,7 +3756,7 @@ void main_window::RemoveFirmwareCache()
 
 	const QStringList filter{ QStringLiteral("ppu-*-lib*.sprx")};
 
-	QDirIterator dir_iter(qstr(cache_dir), filter, QDir::Dirs | QDir::NoDotAndDotDot);
+	QDirIterator dir_iter(QString::fromStdString(cache_dir), filter, QDir::Dirs | QDir::NoDotAndDotDot);
 
 	while (dir_iter.hasNext())
 	{
@@ -3940,7 +3879,7 @@ void main_window::AddGamesFromDirs(QStringList&& paths)
 
 	for (const QString& path : paths)
 	{
-		games_added += Emu.AddGamesFromDir(sstr(path));
+		games_added += Emu.AddGamesFromDir(path.toStdString());
 	}
 
 	if (games_added)
@@ -3959,7 +3898,7 @@ void main_window::AddGamesFromDirs(QStringList&& paths)
 			{
 				for (const auto& dir_path : paths)
 				{
-					if (Emu.IsPathInsideDir(game->info.path, sstr(dir_path)))
+					if (Emu.IsPathInsideDir(game->info.path, dir_path.toStdString()))
 					{
 						// Try to claim operation on directory path
 
@@ -3968,7 +3907,7 @@ void main_window::AddGamesFromDirs(QStringList&& paths)
 						if (!resolved_path.empty() && !claimed_paths.count(resolved_path))
 						{
 							claimed_paths.emplace(game->info.path);
-							paths_added.emplace(game->info.path, qstr(game->info.serial));
+							paths_added.emplace(game->info.path, QString::fromStdString(game->info.serial));
 						}
 
 						break;
@@ -4149,13 +4088,13 @@ void main_window::dropEvent(QDropEvent* event)
 	{
 		for (const auto& psf : drop_paths)
 		{
-			const std::string psf_path = sstr(psf);
+			const std::string psf_path = psf.toStdString();
 			std::string info = fmt::format("Dropped PARAM.SFO '%s':\n\n%s", psf_path, psf::load(psf_path).sfo);
 
 			gui_log.success("%s", info);
 			info.erase(info.begin(), info.begin() + info.find_first_of('\''));
 
-			QMessageBox mb(QMessageBox::Information, tr("PARAM.SFO Information"), qstr(info), QMessageBox::Ok, this);
+			QMessageBox mb(QMessageBox::Information, tr("PARAM.SFO Information"), QString::fromStdString(info), QMessageBox::Ok, this);
 			mb.setTextInteractionFlags(Qt::TextSelectableByMouse);
 			mb.exec();
 		}
@@ -4206,7 +4145,7 @@ void main_window::dropEvent(QDropEvent* event)
 	}
 	case drop_type::drop_rrc: // replay a rsx capture file
 	{
-		BootRsxCapture(sstr(drop_paths.first()));
+		BootRsxCapture(drop_paths.first().toStdString());
 		break;
 	}
 	}

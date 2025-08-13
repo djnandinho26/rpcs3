@@ -62,7 +62,7 @@ namespace rsx
 
 			if (fs::exists(avatar_path))
 			{
-				icon_data = std::make_unique<image_info>(avatar_path.c_str());
+				icon_data = std::make_unique<image_info>(avatar_path);
 				static_cast<image_view*>(image.get())->set_raw_image(icon_data.get());
 			}
 			else
@@ -453,6 +453,7 @@ namespace rsx
 			std::vector<std::unique_ptr<overlay_element>> entries;
 			std::string selected_user;
 			s32 selected_index = 0;
+			bool rpcn_connected = true;
 
 			// Get selected user name
 			if (m_list && m_current_page == m_last_page)
@@ -516,20 +517,25 @@ namespace rsx
 			{
 				rsx_log.error("Failed to connect to RPCN: %s", rpcn::rpcn_state_to_string(res));
 				status_flags |= status_bits::invalidate_image_cache;
-				m_list.reset();
-				return;
+				rpcn_connected = false;
 			}
 
 			if (auto res = m_rpcn->wait_for_authentified(); res != rpcn::rpcn_state::failure_no_failure)
 			{
 				rsx_log.error("Failed to authentify to RPCN: %s", rpcn::rpcn_state_to_string(res));
 				status_flags |= status_bits::invalidate_image_cache;
-				m_list.reset();
-				return;
+				rpcn_connected = false;
 			}
 
-			// Get friends, setup callback and setup comboboxes
-			m_rpcn->get_friends(m_friend_data);
+			// Get friends
+			if (rpcn_connected)
+			{
+				m_rpcn->get_friends(m_friend_data);
+			}
+			else
+			{
+				m_friend_data = {};
+			}
 
 			switch (m_current_page)
 			{
@@ -649,7 +655,7 @@ namespace rsx
 
 			g_cfg_rpcn.load(); // Ensures config is loaded even if rpcn is not running for simulated
 
-			m_rpcn = rpcn::rpcn_client::get_instance();
+			m_rpcn = rpcn::rpcn_client::get_instance(0);
 
 			m_rpcn->register_friend_cb(friend_callback, this);
 
@@ -677,6 +683,13 @@ namespace rsx
 			}
 
 			return CELL_OK;
+		}
+
+		bool friends_list_dialog::rpcn_configured()
+		{
+			cfg_rpcn cfg;
+			cfg.load();
+			return !cfg.get_npid().empty() && !cfg.get_password().empty();
 		}
 	} // namespace overlays
 } // namespace RSX

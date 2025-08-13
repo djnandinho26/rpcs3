@@ -582,7 +582,7 @@ namespace gl
 			const std::vector<rsx::subresource_layout> &input_layouts,
 			bool is_swizzled, GLenum gl_format, GLenum gl_type, rsx::simple_array<std::byte>& staging_buffer)
 	{
-		const auto driver_caps = gl::get_driver_caps();
+		const auto& driver_caps = gl::get_driver_caps();
 		rsx::texture_uploader_capabilities caps
 		{
 			.supports_byteswap = true,
@@ -631,7 +631,7 @@ namespace gl
 				{
 					const GLsizei size = layout.width_in_block * layout.height_in_block * format_block_size;
 					ensure(usz(size) <= staging_buffer.size());
-					if (gl::get_driver_caps().ARB_dsa_supported)
+					if (gl::get_driver_caps().ARB_direct_state_access_supported)
 					{
 						glCompressedTextureSubImage3D(dst->id(), layout.level, 0, 0, layout.layer, layout.width_in_texel, layout.height_in_texel, 1, gl_format, size, staging_buffer.data());
 					}
