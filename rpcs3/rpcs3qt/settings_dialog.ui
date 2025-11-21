@@ -267,24 +267,6 @@
           <item>
            <layout class="QVBoxLayout" name="coreTabRightLayout" stretch="0,0,0,0">
             <item>
-             <widget class="QGroupBox" name="gb_tsx">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Preferred" vsizetype="Minimum">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="title">
-               <string>TSX Instructions</string>
-              </property>
-              <layout class="QVBoxLayout" name="gb_tsx_layout">
-               <item>
-                <widget class="QComboBox" name="enableTSX"/>
-               </item>
-              </layout>
-             </widget>
-            </item>
-            <item>
              <widget class="QGroupBox" name="gb_spu_threads">
               <property name="sizePolicy">
                <sizepolicy hsizetype="Preferred" vsizetype="Minimum">
@@ -551,6 +533,13 @@
                <string>3D</string>
               </property>
               <layout class="QVBoxLayout" name="gb_stereo_layout">
+               <item>
+                <widget class="QCheckBox" name="stereoRenderEnabled">
+                 <property name="text">
+                  <string>Enable 3D Support</string>
+                 </property>
+                </widget>
+               </item>
                <item>
                 <widget class="QComboBox" name="stereoRenderMode"/>
                </item>
@@ -2009,6 +1998,30 @@
              </widget>
             </item>
             <item>
+             <widget class="QGroupBox" name="gb_dateFormat">
+              <property name="title">
+               <string>Date Format</string>
+              </property>
+              <layout class="QVBoxLayout" name="verticalLayout_dateFormat">
+               <item>
+                <widget class="QComboBox" name="dateFormat"/>
+               </item>
+              </layout>
+             </widget>
+            </item>
+            <item>
+             <widget class="QGroupBox" name="gb_timeFormat">
+              <property name="title">
+               <string>Time Format</string>
+              </property>
+              <layout class="QVBoxLayout" name="verticalLayout_timeFormat">
+               <item>
+                <widget class="QComboBox" name="timeFormat"/>
+               </item>
+              </layout>
+             </widget>
+            </item>
+            <item>
              <widget class="QGroupBox" name="gb_console_time">
               <property name="title">
                <string>Console Time</string>
@@ -2701,6 +2714,13 @@
                 </widget>
                </item>
                <item>
+                <widget class="QCheckBox" name="useReBAR">
+                 <property name="text">
+                  <string>Use Re-BAR memory for GPU uploads</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
                 <widget class="QCheckBox" name="disableMslFastMath">
                  <property name="text">
                   <string>Disable MSL Fast Math</string>
@@ -3009,6 +3029,13 @@
                 </widget>
                </item>
                <item>
+                <widget class="QCheckBox" name="showCaptureHints">
+                 <property name="text">
+                  <string>Show capture hints</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
                 <widget class="QCheckBox" name="startGameFullscreen">
                  <property name="text">
                   <string>Start games in fullscreen mode</string>
@@ -3023,13 +3050,14 @@
                 </widget>
                </item>
                <item>
+                <widget class="QCheckBox" name="recordWithOverlays">
+                 <property name="text">
+                  <string>Record with overlays</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
                 <widget class="QCheckBox" name="enableGamemode">
-                 <property name="enabled">
-                  <bool>false</bool>
-                 </property>
-                 <property name="visible">
-                   <bool>false</bool>
-                 </property>
                  <property name="text">
                   <string>Enable GameMode</string>
                  </property>
@@ -4513,6 +4541,13 @@
                  <widget class="QCheckBox" name="debugOverlayIO">
                   <property name="text">
                    <string>Debug Overlay For Pad Input</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QCheckBox" name="debugOverlayMouse">
+                  <property name="text">
+                   <string>Debug Overlay For Mouse Input</string>
                   </property>
                  </widget>
                 </item>

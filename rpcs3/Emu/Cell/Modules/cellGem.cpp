@@ -361,7 +361,7 @@ public:
 		case move_handler::mouse:
 		case move_handler::raw_mouse:
 		{
-			auto& handler = g_fxo->get<MouseHandlerBase>();
+			auto& handler = *ensure(g_fxo->try_get<MouseHandlerBase>());
 			std::lock_guard mouse_lock(handler.mutex);
 			const MouseInfo& info = handler.GetInfo();
 
@@ -374,7 +374,7 @@ public:
 #ifdef HAVE_LIBEVDEV
 		case move_handler::gun:
 		{
-			gun_thread& gun = g_fxo->get<gun_thread>();
+			gun_thread& gun = *ensure(g_fxo->try_get<gun_thread>());
 			std::scoped_lock lock(gun.handler.mutex);
 			gun.num_devices = gun.handler.init() ? gun.handler.get_num_guns() : 0;
 
@@ -505,7 +505,7 @@ public:
 		case move_handler::mouse:
 		case move_handler::raw_mouse:
 		{
-			auto& handler = g_fxo->get<MouseHandlerBase>();
+			auto& handler = *ensure(g_fxo->try_get<MouseHandlerBase>());
 			std::lock_guard mouse_lock(handler.mutex);
 
 			// Make sure that the mouse handler is initialized
@@ -522,7 +522,7 @@ public:
 #ifdef HAVE_LIBEVDEV
 		case move_handler::gun:
 		{
-			gun_thread& gun = g_fxo->get<gun_thread>();
+			gun_thread& gun = *ensure(g_fxo->try_get<gun_thread>());
 			std::scoped_lock lock(gun.handler.mutex);
 			gun.num_devices = gun.handler.init() ? gun.handler.get_num_guns() : 0;
 			connected_controllers = std::min<u32>(std::min<u32>(attribute.max_connect, CELL_GEM_MAX_NUM), gun.num_devices);
@@ -2284,6 +2284,8 @@ error_code cellGemClearStatusFlags(u32 gem_num, u64 mask)
 
 error_code cellGemConvertVideoFinish(ppu_thread& ppu)
 {
+	ppu.state += cpu_flag::wait;
+
 	cellGem.warning("cellGemConvertVideoFinish()");
 
 	auto& gem = g_fxo->get<gem_config>();
@@ -2306,8 +2308,10 @@ error_code cellGemConvertVideoFinish(ppu_thread& ppu)
 	return CELL_OK;
 }
 
-error_code cellGemConvertVideoStart(vm::cptr<void> video_frame)
+error_code cellGemConvertVideoStart(ppu_thread& ppu, vm::cptr<void> video_frame)
 {
+	ppu.state += cpu_flag::wait;
+
 	cellGem.warning("cellGemConvertVideoStart(video_frame=*0x%x)", video_frame);
 
 	auto& gem = g_fxo->get<gem_config>();
@@ -2459,6 +2463,8 @@ error_code cellGemEnableMagnetometer2(u32 gem_num, u32 enable)
 
 error_code cellGemEnd(ppu_thread& ppu)
 {
+	ppu.state += cpu_flag::wait;
+
 	cellGem.warning("cellGemEnd()");
 
 	auto& gem = g_fxo->get<gem_config>();
@@ -3263,7 +3269,7 @@ error_code cellGemPrepareCamera(s32 max_exposure, f32 image_quality)
 
 	extern error_code cellCameraGetAttribute(s32 dev_num, s32 attrib, vm::ptr<u32> arg1, vm::ptr<u32> arg2);
 	extern error_code cellCameraSetAttribute(s32 dev_num, s32 attrib, u32 arg1, u32 arg2);
-	extern error_code cellCameraGetBufferInfoEx(s32 dev_num, vm::ptr<CellCameraInfoEx> info);
+	extern error_code cellCameraGetBufferInfoEx(ppu_thread&, s32 dev_num, vm::ptr<CellCameraInfoEx> info);
 
 	vm::var<CellCameraInfoEx> info = vm::make_var<CellCameraInfoEx>({});
 	vm::var<u32> arg1 = vm::make_var<u32>({});
@@ -3271,7 +3277,7 @@ error_code cellGemPrepareCamera(s32 max_exposure, f32 image_quality)
 
 	cellCameraGetAttribute(0, 0x3e6, arg1, arg2);
 	cellCameraSetAttribute(0, 0x3e6, 0x3e, *arg2 | 0x80);
-	cellCameraGetBufferInfoEx(0, info);
+	cellCameraGetBufferInfoEx(*cpu_thread::get_current<ppu_thread>(), 0, info);
 
 	if (info->width == 640)
 	{
@@ -3482,7 +3488,7 @@ error_code cellGemSetRumble(u32 gem_num, u8 rumble)
 			{
 				if (!binding.device || binding.device->player_id != pad_index) continue;
 
-				handler->SetRumble(pad_index, rumble, rumble > 0);
+				handler->SetRumble(pad_index, rumble, rumble);
 				break;
 			}
 		}
@@ -3603,6 +3609,8 @@ error_code cellGemTrackHues(vm::cptr<u32> req_hues, vm::ptr<u32> res_hues)
 
 error_code cellGemUpdateFinish(ppu_thread& ppu)
 {
+	ppu.state += cpu_flag::wait;
+
 	cellGem.warning("cellGemUpdateFinish()");
 
 	auto& gem = g_fxo->get<gem_config>();

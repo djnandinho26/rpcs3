@@ -68,10 +68,6 @@ LOG_CHANNEL(sys_log, "SYS");
 // Preallocate 32 MiB
 stx::manual_typemap<void, 0x20'00000, 128> g_fixed_typemap;
 
-bool g_use_rtm = false;
-u64 g_rtm_tx_limit1 = 0;
-u64 g_rtm_tx_limit2 = 0;
-
 std::string g_cfg_defaults;
 
 atomic_t<u64> g_watchdog_hold_ctr{0};
@@ -221,12 +217,18 @@ void init_fxo_for_exec(utils::serial* ar, bool full = false)
 
 	Emu.ConfigurePPUCache();
 
+	stx::g_launch_retainer = 1;
+
 	g_fxo->init(false, ar, [](){ Emu.ExecPostponedInitCode(); });
 
 	Emu.GetCallbacks().init_gs_render(ar);
-	Emu.GetCallbacks().init_pad_handler(Emu.GetTitleID());
 	Emu.GetCallbacks().init_kb_handler();
 	Emu.GetCallbacks().init_mouse_handler();
+
+	stx::g_launch_retainer = 0;
+	stx::g_launch_retainer.notify_all();
+
+	Emu.GetCallbacks().init_pad_handler(Emu.GetTitleID());
 
 	usz pos = 0;
 
@@ -859,6 +861,7 @@ bool Emulator::BootRsxCapture(const std::string& path)
 
 	GetCallbacks().on_run(false);
 	m_state = system_state::starting;
+	m_state.notify_all();
 
 	ensure(g_fxo->init<named_thread<rsx::rsx_replay_thread>>("RSX Replay", std::move(frame)));
 
@@ -1533,9 +1536,6 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 		m_localized_title = std::string(psf::get_string(_psf, fmt::format("TITLE_%02d", static_cast<s32>(g_cfg.sys.language.get())), m_title));
 		sys_log.notice("Localized Title: %s", GetLocalizedTitle());
 
-		// Set RTM usage
-		g_use_rtm = utils::has_rtm() && (((utils::has_mpx() && !utils::has_tsx_force_abort()) && g_cfg.core.enable_TSX == tsx_usage::enabled) || g_cfg.core.enable_TSX == tsx_usage::forced);
-
 		{
 			// Log some extra info in case of boot
 #if defined(HAVE_VULKAN)
@@ -1546,25 +1546,12 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 #endif
 			sys_log.notice("Used configuration:\n%s\n", g_cfg.to_string());
 
-			if (g_use_rtm && (!utils::has_mpx() || utils::has_tsx_force_abort()))
-			{
-				sys_log.warning("TSX forced by User");
-			}
-
 			// Initialize patch engine
 			g_fxo->need<patch_engine>();
 
 			// Load patches from different locations
 			g_fxo->get<patch_engine>().append_global_patches();
 			g_fxo->get<patch_engine>().append_title_patches(m_title_id);
-		}
-
-		if (g_use_rtm)
-		{
-			// Update supplementary settings
-			const f64 _1ns = utils::get_tsc_freq() / 1000'000'000.;
-			g_rtm_tx_limit1 = static_cast<u64>(g_cfg.core.tx_limit1_ns * _1ns);
-			g_rtm_tx_limit2 = static_cast<u64>(g_cfg.core.tx_limit2_ns * _1ns);
 		}
 
 		// Set bdvd_dir
@@ -2076,30 +2063,6 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 			}
 		}
 
-		// Check game updates
-		if (const std::string hdd0_boot = hdd0_game + m_title_id + "/USRDIR/EBOOT.BIN"; !m_ar
-				&& recursion_count == 0 && disc.empty() && !bdvd_dir.empty() && !m_title_id.empty()
-				&& resolved_path == GetCallbacks().resolve_path(vfs::get("/dev_bdvd/PS3_GAME/USRDIR/EBOOT.BIN"))
-				&& resolved_path != GetCallbacks().resolve_path(hdd0_boot) && fs::is_file(hdd0_boot))
-		{
-			if (const psf::registry update_sfo = psf::load(hdd0_game + m_title_id + "/PARAM.SFO").sfo;
-				psf::get_string(update_sfo, "TITLE_ID") == m_title_id && psf::get_string(update_sfo, "CATEGORY") == "GD")
-			{
-				// Booting game update
-				sys_log.success("Updates found at /dev_hdd0/game/%s/", m_title_id);
-				m_path = hdd0_boot;
-
-				const game_boot_result boot_result = Load(m_title_id, true, recursion_count + 1);
-				if (boot_result == game_boot_result::no_errors)
-				{
-					return game_boot_result::no_errors;
-				}
-
-				sys_log.error("Failed to boot update at \"%s\", game update may be corrupted! Consider uninstalling or reinstalling it. (reason: %s)", m_path, boot_result);
-				return boot_result;
-			}
-		}
-
 		// Check firmware version
 		if (const std::string_view game_fw_version = psf::get_string(_psf, "PS3_SYSTEM_VER", ""); !game_fw_version.empty())
 		{
@@ -2136,12 +2099,6 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 		// Replace newlines with spaces
 		std::replace(m_title.begin(), m_title.end(), '\n', ' ');
 		std::replace(m_localized_title.begin(), m_localized_title.end(), '\n', ' ');
-
-		// Mount /host_root/ if necessary (special value)
-		if (g_cfg.vfs.host_root)
-		{
-			vfs::mount("/host_root", "/");
-		}
 
 		// Open SELF or ELF
 		std::string elf_path = m_path;
@@ -2207,9 +2164,40 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 			return game_boot_result::decryption_error;
 		}
 
+		// Check EBOOT.BIN (before updates - disc games)
+		ppu_exec_object ppu_exec;
+		ppu_exec.open(elf_file);
+
+		// Check game updates
+		if (const std::string hdd0_boot = hdd0_game + m_title_id + "/USRDIR/EBOOT.BIN"; !m_ar
+				&& recursion_count == 0 && disc.empty() && !bdvd_dir.empty() && !m_title_id.empty()
+				&& resolved_path == GetCallbacks().resolve_path(vfs::get("/dev_bdvd/PS3_GAME/USRDIR/EBOOT.BIN"))
+				&& resolved_path != GetCallbacks().resolve_path(hdd0_boot) && fs::is_file(hdd0_boot)
+				&& ppu_exec == elf_error::ok)
+		{
+			if (const psf::registry update_sfo = psf::load(hdd0_game + m_title_id + "/PARAM.SFO").sfo;
+				psf::get_string(update_sfo, "TITLE_ID") == m_title_id && psf::get_string(update_sfo, "CATEGORY") == "GD")
+			{
+				ppu_exec = {};
+				elf_file.close();
+
+				// Booting game update
+				sys_log.success("Updates found at /dev_hdd0/game/%s/", m_title_id);
+				m_path = hdd0_boot;
+
+				const game_boot_result boot_result = Load(m_title_id, true, recursion_count + 1);
+				if (boot_result == game_boot_result::no_errors)
+				{
+					return game_boot_result::no_errors;
+				}
+
+				sys_log.error("Failed to boot update at \"%s\", game update may be corrupted! Consider uninstalling or reinstalling it. (reason: %s)", m_path, boot_result);
+				return boot_result;
+			}
+		}
+
 		m_state = system_state::ready;
 
-		ppu_exec_object ppu_exec;
 		ppu_prx_object ppu_prx;
 		ppu_rel_object ppu_rel;
 		spu_exec_object spu_exec;
@@ -2217,19 +2205,25 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 
 		vm::init();
 
-		if (m_ar)
+		if (ppu_exec == elf_error::ok)
 		{
-			vm::load(*m_ar);
-		}
+			if (m_ar)
+			{
+				vm::load(*m_ar);
+			}
 
-		if (!hdd1.empty())
-		{
-			vfs::mount("/dev_hdd1", hdd1);
-			sys_log.notice("Hdd1: %s", vfs::get("/dev_hdd1"));
-		}
+			// Mount /host_root/ if necessary (special value)
+			if (g_cfg.vfs.host_root)
+			{
+				vfs::mount("/host_root", "/");
+			}
 
-		if (ppu_exec.open(elf_file) == elf_error::ok)
-		{
+			if (!hdd1.empty())
+			{
+				vfs::mount("/dev_hdd1", hdd1);
+				sys_log.notice("Hdd1: %s", vfs::get("/dev_hdd1"));
+			}
+
 			// PS3 executable
 			GetCallbacks().on_ready();
 
@@ -2377,6 +2371,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 		else if (ppu_prx.open(elf_file) == elf_error::ok)
 		{
 			// PPU PRX
+			m_ar.reset();
 			GetCallbacks().on_ready();
 			g_fxo->init(false);
 			ppu_load_prx(ppu_prx, false, m_path);
@@ -2385,6 +2380,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 		else if (spu_exec.open(elf_file) == elf_error::ok)
 		{
 			// SPU executable
+			m_ar.reset();
 			GetCallbacks().on_ready();
 			g_fxo->init(false);
 			spu_load_exec(spu_exec);
@@ -2393,6 +2389,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 		else if (spu_rel.open(elf_file) == elf_error::ok)
 		{
 			// SPU linker file
+			m_ar.reset();
 			GetCallbacks().on_ready();
 			g_fxo->init(false);
 			spu_load_rel_exec(spu_rel);
@@ -2401,6 +2398,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 		else if (ppu_rel.open(elf_file) == elf_error::ok)
 		{
 			// PPU linker file
+			m_ar.reset();
 			GetCallbacks().on_ready();
 			g_fxo->init(false);
 			ppu_load_rel_exec(ppu_rel);
@@ -2472,6 +2470,7 @@ void Emulator::Run(bool start_playtime)
 	rpcs3::utils::configure_logs();
 
 	m_state = system_state::starting;
+	m_state.notify_all();
 
 	if (g_cfg.misc.prevent_display_sleep)
 	{
@@ -2529,7 +2528,7 @@ void Emulator::FixGuestTime()
 			// Mark a known savestate location and the one we try to boot (in case we boot a moved/copied savestate)
 			if (g_cfg.savestate.suspend_emu)
 			{
-				for (std::string old_path : std::initializer_list<std::string>{m_ar ? m_path_old : "", m_title_id.empty() ? "" : get_savestate_file(m_title_id, m_path_old, 0, 0)})
+				for (std::string old_path : std::initializer_list<std::string>{m_ar ? m_path_old : "", m_title_id.empty() ? "" : get_savestate_file(m_title_id, m_path_old, -1)})
 				{
 					if (old_path.empty())
 					{
@@ -3254,6 +3253,7 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 	}
 
 	// Signal threads
+	m_state.notify_all();
 
 	if (auto rsx = g_fxo->try_get<rsx::thread>())
 	{
@@ -3390,7 +3390,7 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 		{
 			set_progress_message("Creating File");
 
-			path = get_savestate_file(m_title_id, m_path, 0, 0);
+			path = get_savestate_file(m_title_id, m_path, 0, umax);
 
 			// The function is meant for reading files, so if there is no ZST file it would not return compressed file path
 			// So this is the only place where the result is edited if need to be
@@ -3630,13 +3630,20 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 					sys_log.success("Old savestate has been removed: path='%s'", old_path2);
 				}
 
-				sys_log.success("Saved savestate! path='%s' (file_size=0x%x, time_to_save=%gs)", path, file_stat.size, (get_system_time() - start_time) / 1000000.);
+				sys_log.success("Saved savestate! path='%s' (file_size=0x%x (%d MiB), time_to_save=%gs)", path, file_stat.size, utils::aligned_div<u64>(file_stat.size, 1u << 20), (get_system_time() - start_time) / 1000000.);
 
 				if (!g_cfg.savestate.suspend_emu)
 				{
 					// Allow to reboot from GUI
 					m_path = path;
 				}
+
+				// Clean savestates
+				// Cap by number and aggregate file size
+				const u64 max_files = g_cfg.savestate.max_files;
+				const u64 max_files_size_mb = g_cfg.savestate.max_files_size;
+
+				clean_savestates(m_title_id, m_path, max_files, max_files_size_mb << 20);
 			}
 		}
 

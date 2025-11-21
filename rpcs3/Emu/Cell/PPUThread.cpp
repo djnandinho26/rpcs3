@@ -195,17 +195,17 @@ const auto ppu_gateway = build_function_asm<void(*)(ppu_thread*)>("ppu_gateway",
 	c.push(x86::rdi);
 	c.push(x86::rbp);
 	c.push(x86::rbx);
-	c.sub(x86::rsp, 0xa8);
-	c.movaps(x86::oword_ptr(x86::rsp, 0x90), x86::xmm15);
-	c.movaps(x86::oword_ptr(x86::rsp, 0x80), x86::xmm14);
-	c.movaps(x86::oword_ptr(x86::rsp, 0x70), x86::xmm13);
-	c.movaps(x86::oword_ptr(x86::rsp, 0x60), x86::xmm12);
-	c.movaps(x86::oword_ptr(x86::rsp, 0x50), x86::xmm11);
-	c.movaps(x86::oword_ptr(x86::rsp, 0x40), x86::xmm10);
-	c.movaps(x86::oword_ptr(x86::rsp, 0x30), x86::xmm9);
-	c.movaps(x86::oword_ptr(x86::rsp, 0x20), x86::xmm8);
-	c.movaps(x86::oword_ptr(x86::rsp, 0x10), x86::xmm7);
-	c.movaps(x86::oword_ptr(x86::rsp, 0), x86::xmm6);
+	c.sub(x86::rsp, 0xc8);
+	c.movaps(x86::oword_ptr(x86::rsp, 0xb0), x86::xmm15);
+	c.movaps(x86::oword_ptr(x86::rsp, 0xa0), x86::xmm14);
+	c.movaps(x86::oword_ptr(x86::rsp, 0x90), x86::xmm13);
+	c.movaps(x86::oword_ptr(x86::rsp, 0x80), x86::xmm12);
+	c.movaps(x86::oword_ptr(x86::rsp, 0x70), x86::xmm11);
+	c.movaps(x86::oword_ptr(x86::rsp, 0x60), x86::xmm10);
+	c.movaps(x86::oword_ptr(x86::rsp, 0x50), x86::xmm9);
+	c.movaps(x86::oword_ptr(x86::rsp, 0x40), x86::xmm8);
+	c.movaps(x86::oword_ptr(x86::rsp, 0x30), x86::xmm7);
+	c.movaps(x86::oword_ptr(x86::rsp, 0x20), x86::xmm6);
 #else
 	c.push(x86::rbp);
 	c.push(x86::r15);
@@ -252,17 +252,17 @@ const auto ppu_gateway = build_function_asm<void(*)(ppu_thread*)>("ppu_gateway",
 	}
 
 #ifdef _WIN32
-	c.movaps(x86::xmm6, x86::oword_ptr(x86::rsp, 0));
-	c.movaps(x86::xmm7, x86::oword_ptr(x86::rsp, 0x10));
-	c.movaps(x86::xmm8, x86::oword_ptr(x86::rsp, 0x20));
-	c.movaps(x86::xmm9, x86::oword_ptr(x86::rsp, 0x30));
-	c.movaps(x86::xmm10, x86::oword_ptr(x86::rsp, 0x40));
-	c.movaps(x86::xmm11, x86::oword_ptr(x86::rsp, 0x50));
-	c.movaps(x86::xmm12, x86::oword_ptr(x86::rsp, 0x60));
-	c.movaps(x86::xmm13, x86::oword_ptr(x86::rsp, 0x70));
-	c.movaps(x86::xmm14, x86::oword_ptr(x86::rsp, 0x80));
-	c.movaps(x86::xmm15, x86::oword_ptr(x86::rsp, 0x90));
-	c.add(x86::rsp, 0xa8);
+	c.movaps(x86::xmm6, x86::oword_ptr(x86::rsp, 0x20));
+	c.movaps(x86::xmm7, x86::oword_ptr(x86::rsp, 0x30));
+	c.movaps(x86::xmm8, x86::oword_ptr(x86::rsp, 0x40));
+	c.movaps(x86::xmm9, x86::oword_ptr(x86::rsp, 0x50));
+	c.movaps(x86::xmm10, x86::oword_ptr(x86::rsp, 0x60));
+	c.movaps(x86::xmm11, x86::oword_ptr(x86::rsp, 0x70));
+	c.movaps(x86::xmm12, x86::oword_ptr(x86::rsp, 0x80));
+	c.movaps(x86::xmm13, x86::oword_ptr(x86::rsp, 0x90));
+	c.movaps(x86::xmm14, x86::oword_ptr(x86::rsp, 0xa0));
+	c.movaps(x86::xmm15, x86::oword_ptr(x86::rsp, 0xb0));
+	c.add(x86::rsp, 0xc8);
 	c.pop(x86::rbx);
 	c.pop(x86::rbp);
 	c.pop(x86::rdi);
@@ -934,13 +934,40 @@ struct ppu_far_jumps_t
 	ppu_far_jumps_t(int) noexcept {}
 
 	std::map<u32, all_info_t> vals;
+	std::pair<u32, u32> vals_range{0, 0};
 	::jit_runtime rt;
 
 	mutable shared_mutex mutex;
 
+	void add_value(u32 addr, all_info_t info)
+	{
+		vals.insert_or_assign(addr, std::move(info));
+
+		if (vals.size() == 1)
+		{
+			vals_range.first = addr;
+			vals_range.second = addr;
+		}
+		else
+		{
+			vals_range.first = std::min<u32>(vals_range.first, addr);
+			vals_range.second = std::max<u32>(vals_range.second, addr);
+		}
+	}
+
 	// Get target address, 'ppu' is used in ppu_far_jump in order to modify registers
 	u32 get_target(u32 pc, ppu_thread* ppu = nullptr)
 	{
+		if (vals_range.first > pc)
+		{
+			return 0;
+		}
+
+		if (vals_range.second < pc)
+		{
+			return 0;
+		}
+
 		reader_lock lock(mutex);
 
 		if (auto it = vals.find(pc); it != vals.end())
@@ -949,13 +976,23 @@ struct ppu_far_jumps_t
 			return all_info.get_target(pc, ppu);
 		}
 
-		return {};
+		return 0;
 	}
 
 	// Get function patches in range (entry -> target)
 	std::vector<std::pair<u32, u32>> get_targets(u32 pc, u32 size)
 	{
 		std::vector<std::pair<u32, u32>> targets;
+
+		if (vals_range.first >= pc + size)
+		{
+			return targets;
+		}
+
+		if (vals_range.second < pc)
+		{
+			return targets;
+		}
 
 		reader_lock lock(mutex);
 
@@ -1005,22 +1042,21 @@ struct ppu_far_jumps_t
 
 #ifdef ARCH_X64
 				c.mov(args[0], x86::rbp);
-				c.mov(x86::dword_ptr(args[0], ::offset32(&ppu_thread::cia)), pc);
+				c.mov(args[2], vm::g_base_addr + pc);
 				c.jmp(ppu_far_jump);
 #else
 				Label jmp_address = c.newLabel();
-				Label imm_address = c.newLabel();
+				Label this_op_address = c.newLabel();
 
-				c.ldr(args[1].w(), arm::ptr(imm_address));
-				c.str(args[1].w(), arm::Mem(args[0], ::offset32(&ppu_thread::cia)));
+				c.ldr(args[2], arm::ptr(this_op_address));
 				c.ldr(args[1], arm::ptr(jmp_address));
 				c.br(args[1]);
 
 				c.align(AlignMode::kCode, 16);
 				c.bind(jmp_address);
 				c.embedUInt64(reinterpret_cast<u64>(ppu_far_jump));
-				c.bind(imm_address);
-				c.embedUInt32(pc);
+				c.bind(this_op_address);
+				c.embedUInt64(reinterpret_cast<u64>(vm::g_base_addr) + pc);
 #endif
 			}, &rt);
 		}
@@ -1039,9 +1075,9 @@ u32 ppu_get_far_jump(u32 pc)
 	return g_fxo->get<ppu_far_jumps_t>().get_target(pc);
 }
 
-static void ppu_far_jump(ppu_thread& ppu, ppu_opcode_t, be_t<u32>*, ppu_intrp_func*)
+static void ppu_far_jump(ppu_thread& ppu, ppu_opcode_t, be_t<u32>* this_op, ppu_intrp_func*)
 {
-	const u32 cia = g_fxo->get<ppu_far_jumps_t>().get_target(ppu.cia, &ppu);
+	const u32 cia = g_fxo->get<ppu_far_jumps_t>().get_target(vm::get_addr(this_op), &ppu);
 
 	if (!vm::check_addr(cia, vm::page_executable))
 	{
@@ -1110,7 +1146,7 @@ bool ppu_form_branch_to_code(u32 entry, u32 target, bool link, bool with_toc, st
 	auto& jumps = g_fxo->get<ppu_far_jumps_t>();
 
 	std::lock_guard lock(jumps.mutex);
-	jumps.vals.insert_or_assign(entry, ppu_far_jumps_t::all_info_t{target, link, with_toc, std::move(module_name)});
+	jumps.add_value(entry, ppu_far_jumps_t::all_info_t{target, link, with_toc, std::move(module_name)});
 	ppu_register_function_at(entry, 4, g_cfg.core.ppu_decoder == ppu_decoder_type::_static ? &ppu_far_jump : ensure(g_fxo->get<ppu_far_jumps_t>().gen_jump<false>(entry)));
 
 	return true;
@@ -2272,7 +2308,7 @@ void ppu_thread::cpu_sleep()
 	raddr = 0;
 
 	// Setup wait flag and memory flags to relock itself
-	state += g_use_rtm ? cpu_flag::wait : cpu_flag::wait + cpu_flag::memory;
+	state += cpu_flag::wait + cpu_flag::memory;
 
 	if (auto ptr = vm::g_tls_locked)
 	{
@@ -2326,10 +2362,11 @@ void ppu_thread::cpu_wait(bs_t<cpu_flag> old)
 	if (u32 addr = res_notify)
 	{
 		res_notify = 0;
+		res_notify_postpone_streak = 0;
 
-		if (res_notify_time == vm::reservation_notifier_count_index(addr).second)
+		if (res_notify_time + 128 == (vm::reservation_acquire(addr) & -128))
 		{
-			vm::reservation_notifier_notify(addr);
+			vm::reservation_notifier_notify(addr, res_notify_time);
 		}
 	}
 
@@ -2417,10 +2454,8 @@ ppu_thread::ppu_thread(const ppu_thread_params& param, std::string_view name, u3
 	// Trigger the scheduler
 	state += cpu_flag::suspend;
 
-	if (!g_use_rtm)
-	{
-		state += cpu_flag::memory;
-	}
+	// Acquire memory passive lock
+	state += cpu_flag::memory;
 
 	call_history.data.resize(g_cfg.core.ppu_call_history ? call_history_max_size : 1);
 	syscall_history.data.resize(g_cfg.core.ppu_call_history ? syscall_history_max_size : 1);
@@ -2666,11 +2701,7 @@ ppu_thread::ppu_thread(utils::serial& ar)
 
 	// Trigger the scheduler
 	state += cpu_flag::suspend;
-
-	if (!g_use_rtm)
-	{
-		state += cpu_flag::memory;
-	}
+	state += cpu_flag::memory;
 
 	ppu_tname = make_single<std::string>(ar.pop<std::string>());
 
@@ -3117,7 +3148,6 @@ static T ppu_load_acquire_reservation(ppu_thread& ppu, u32 addr)
 	{
 		// Reload "cached" reservation of previous succeeded conditional store
 		// This seems like a hardware feature according to cellSpursAddUrgentCommand function
-		ppu.rtime -= 128;
 	}
 	else
 	{
@@ -3154,221 +3184,6 @@ extern u64 ppu_ldarx(ppu_thread& ppu, u32 addr)
 {
 	return ppu_load_acquire_reservation<u64>(ppu, addr);
 }
-
-const auto ppu_stcx_accurate_tx = build_function_asm<u64(*)(u32 raddr, u64 rtime, const void* _old, u64 _new)>("ppu_stcx_accurate_tx", [](native_asm& c, auto& args)
-{
-	using namespace asmjit;
-
-#if defined(ARCH_X64)
-	Label fall = c.newLabel();
-	Label fail = c.newLabel();
-	Label _ret = c.newLabel();
-	Label load = c.newLabel();
-
-	//if (utils::has_avx() && !s_tsx_avx)
-	//{
-	//	c.vzeroupper();
-	//}
-
-	// Create stack frame if necessary (Windows ABI has only 6 volatile vector registers)
-	c.push(x86::rbp);
-	c.push(x86::r13);
-	c.push(x86::r14);
-	c.sub(x86::rsp, 48);
-#ifdef _WIN32
-	if (!s_tsx_avx)
-	{
-		c.movups(x86::oword_ptr(x86::rsp, 0), x86::xmm6);
-		c.movups(x86::oword_ptr(x86::rsp, 16), x86::xmm7);
-	}
-#endif
-
-	// Prepare registers
-	build_swap_rdx_with(c, args, x86::r10);
-	c.movabs(x86::rbp, reinterpret_cast<u64>(&vm::g_sudo_addr));
-	c.mov(x86::rbp, x86::qword_ptr(x86::rbp));
-	c.lea(x86::rbp, x86::qword_ptr(x86::rbp, args[0]));
-	c.and_(x86::rbp, -128);
-	c.prefetchw(x86::byte_ptr(x86::rbp, 0));
-	c.prefetchw(x86::byte_ptr(x86::rbp, 64));
-	c.movzx(args[0].r32(), args[0].r16());
-	c.shr(args[0].r32(), 1);
-	c.movabs(x86::r11, reinterpret_cast<u64>(+vm::g_reservations));
-	c.lea(x86::r11, x86::qword_ptr(x86::r11, args[0]));
-	c.and_(x86::r11, -128 / 2);
-	c.and_(args[0].r32(), 63);
-
-	// Prepare data
-	if (s_tsx_avx)
-	{
-		c.vmovups(x86::ymm0, x86::ymmword_ptr(args[2], 0));
-		c.vmovups(x86::ymm1, x86::ymmword_ptr(args[2], 32));
-		c.vmovups(x86::ymm2, x86::ymmword_ptr(args[2], 64));
-		c.vmovups(x86::ymm3, x86::ymmword_ptr(args[2], 96));
-	}
-	else
-	{
-		c.movaps(x86::xmm0, x86::oword_ptr(args[2], 0));
-		c.movaps(x86::xmm1, x86::oword_ptr(args[2], 16));
-		c.movaps(x86::xmm2, x86::oword_ptr(args[2], 32));
-		c.movaps(x86::xmm3, x86::oword_ptr(args[2], 48));
-		c.movaps(x86::xmm4, x86::oword_ptr(args[2], 64));
-		c.movaps(x86::xmm5, x86::oword_ptr(args[2], 80));
-		c.movaps(x86::xmm6, x86::oword_ptr(args[2], 96));
-		c.movaps(x86::xmm7, x86::oword_ptr(args[2], 112));
-	}
-
-	// Alloc r14 to stamp0
-	const auto stamp0 = x86::r14;
-	build_get_tsc(c, stamp0);
-
-	Label fail2 = c.newLabel();
-
-	Label tx1 = build_transaction_enter(c, fall, [&]()
-	{
-		build_get_tsc(c);
-		c.sub(x86::rax, stamp0);
-		c.movabs(x86::r13, reinterpret_cast<u64>(&g_rtm_tx_limit2));
-		c.cmp(x86::rax, x86::qword_ptr(x86::r13));
-		c.jae(fall);
-	});
-
-	// Check pause flag
-	c.bt(x86::dword_ptr(args[2], ::offset32(&ppu_thread::state) - ::offset32(&ppu_thread::rdata)), static_cast<u32>(cpu_flag::pause));
-	c.jc(fall);
-	c.xbegin(tx1);
-
-	if (s_tsx_avx)
-	{
-		c.vxorps(x86::ymm0, x86::ymm0, x86::ymmword_ptr(x86::rbp, 0));
-		c.vxorps(x86::ymm1, x86::ymm1, x86::ymmword_ptr(x86::rbp, 32));
-		c.vxorps(x86::ymm2, x86::ymm2, x86::ymmword_ptr(x86::rbp, 64));
-		c.vxorps(x86::ymm3, x86::ymm3, x86::ymmword_ptr(x86::rbp, 96));
-		c.vorps(x86::ymm0, x86::ymm0, x86::ymm1);
-		c.vorps(x86::ymm1, x86::ymm2, x86::ymm3);
-		c.vorps(x86::ymm0, x86::ymm1, x86::ymm0);
-		c.vptest(x86::ymm0, x86::ymm0);
-	}
-	else
-	{
-		c.xorps(x86::xmm0, x86::oword_ptr(x86::rbp, 0));
-		c.xorps(x86::xmm1, x86::oword_ptr(x86::rbp, 16));
-		c.xorps(x86::xmm2, x86::oword_ptr(x86::rbp, 32));
-		c.xorps(x86::xmm3, x86::oword_ptr(x86::rbp, 48));
-		c.xorps(x86::xmm4, x86::oword_ptr(x86::rbp, 64));
-		c.xorps(x86::xmm5, x86::oword_ptr(x86::rbp, 80));
-		c.xorps(x86::xmm6, x86::oword_ptr(x86::rbp, 96));
-		c.xorps(x86::xmm7, x86::oword_ptr(x86::rbp, 112));
-		c.orps(x86::xmm0, x86::xmm1);
-		c.orps(x86::xmm2, x86::xmm3);
-		c.orps(x86::xmm4, x86::xmm5);
-		c.orps(x86::xmm6, x86::xmm7);
-		c.orps(x86::xmm0, x86::xmm2);
-		c.orps(x86::xmm4, x86::xmm6);
-		c.orps(x86::xmm0, x86::xmm4);
-		c.ptest(x86::xmm0, x86::xmm0);
-	}
-
-	c.jnz(fail);
-
-	// Store 8 bytes
-	c.mov(x86::qword_ptr(x86::rbp, args[0], 1, 0), args[3]);
-
-	c.xend();
-	c.lock().add(x86::qword_ptr(x86::r11), 64);
-	build_get_tsc(c);
-	c.sub(x86::rax, stamp0);
-	c.jmp(_ret);
-
-	// XABORT is expensive so try to finish with xend instead
-	c.bind(fail);
-
-	// Load old data to store back in rdata
-	if (s_tsx_avx)
-	{
-		c.vmovaps(x86::ymm0, x86::ymmword_ptr(x86::rbp, 0));
-		c.vmovaps(x86::ymm1, x86::ymmword_ptr(x86::rbp, 32));
-		c.vmovaps(x86::ymm2, x86::ymmword_ptr(x86::rbp, 64));
-		c.vmovaps(x86::ymm3, x86::ymmword_ptr(x86::rbp, 96));
-	}
-	else
-	{
-		c.movaps(x86::xmm0, x86::oword_ptr(x86::rbp, 0));
-		c.movaps(x86::xmm1, x86::oword_ptr(x86::rbp, 16));
-		c.movaps(x86::xmm2, x86::oword_ptr(x86::rbp, 32));
-		c.movaps(x86::xmm3, x86::oword_ptr(x86::rbp, 48));
-		c.movaps(x86::xmm4, x86::oword_ptr(x86::rbp, 64));
-		c.movaps(x86::xmm5, x86::oword_ptr(x86::rbp, 80));
-		c.movaps(x86::xmm6, x86::oword_ptr(x86::rbp, 96));
-		c.movaps(x86::xmm7, x86::oword_ptr(x86::rbp, 112));
-	}
-
-	c.xend();
-	c.jmp(fail2);
-
-	c.bind(fall);
-	c.mov(x86::rax, -1);
-	c.jmp(_ret);
-
-	c.bind(fail2);
-	c.lock().sub(x86::qword_ptr(x86::r11), 64);
-	c.bind(load);
-
-	// Store previous data back to rdata
-	if (s_tsx_avx)
-	{
-		c.vmovaps(x86::ymmword_ptr(args[2], 0), x86::ymm0);
-		c.vmovaps(x86::ymmword_ptr(args[2], 32), x86::ymm1);
-		c.vmovaps(x86::ymmword_ptr(args[2], 64), x86::ymm2);
-		c.vmovaps(x86::ymmword_ptr(args[2], 96), x86::ymm3);
-	}
-	else
-	{
-		c.movaps(x86::oword_ptr(args[2], 0), x86::xmm0);
-		c.movaps(x86::oword_ptr(args[2], 16), x86::xmm1);
-		c.movaps(x86::oword_ptr(args[2], 32), x86::xmm2);
-		c.movaps(x86::oword_ptr(args[2], 48), x86::xmm3);
-		c.movaps(x86::oword_ptr(args[2], 64), x86::xmm4);
-		c.movaps(x86::oword_ptr(args[2], 80), x86::xmm5);
-		c.movaps(x86::oword_ptr(args[2], 96), x86::xmm6);
-		c.movaps(x86::oword_ptr(args[2], 112), x86::xmm7);
-	}
-
-	c.mov(x86::rax, -1);
-	c.mov(x86::qword_ptr(args[2], ::offset32(&ppu_thread::last_ftime) - ::offset32(&ppu_thread::rdata)), x86::rax);
-	c.xor_(x86::eax, x86::eax);
-	//c.jmp(_ret);
-
-	c.bind(_ret);
-
-#ifdef _WIN32
-	if (!s_tsx_avx)
-	{
-		c.vmovups(x86::xmm6, x86::oword_ptr(x86::rsp, 0));
-		c.vmovups(x86::xmm7, x86::oword_ptr(x86::rsp, 16));
-	}
-#endif
-
-	if (s_tsx_avx)
-	{
-		c.vzeroupper();
-	}
-
-	c.add(x86::rsp, 48);
-	c.pop(x86::r14);
-	c.pop(x86::r13);
-	c.pop(x86::rbp);
-
-	maybe_flush_lbr(c);
-	c.ret();
-#else
-	UNUSED(args);
-
-	// Unimplemented should fail.
-	c.brk(Imm(0x42));
-	c.ret(a64::x30);
-#endif
-});
 
 template <typename T>
 static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
@@ -3448,77 +3263,6 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 			{
 				// Already locked or updated: give up
 				return false;
-			}
-
-			if (g_use_rtm) [[likely]]
-			{
-				switch (u64 count = ppu_stcx_accurate_tx(addr & -8, rtime, ppu.rdata, std::bit_cast<u64>(new_data)))
-				{
-				case umax:
-				{
-					auto& all_data = *vm::get_super_ptr<spu_rdata_t>(addr & -128);
-					auto& sdata = *vm::get_super_ptr<atomic_be_t<u64>>(addr & -8);
-
-					const bool ok = cpu_thread::suspend_all<+3>(&ppu, {all_data, all_data + 64, &res}, [&]
-					{
-						if ((res & -128) == rtime && cmp_rdata(ppu.rdata, all_data))
-						{
-							sdata.release(new_data);
-							res += 64;
-							return true;
-						}
-
-						mov_rdata_nt(ppu.rdata, all_data);
-						res -= 64;
-						return false;
-					});
-
-					if (ok)
-					{
-						break;
-					}
-
-					ppu.last_ftime = -1;
-					[[fallthrough]];
-				}
-				case 0:
-				{
-					if (ppu.last_faddr == addr)
-					{
-						ppu.last_fail++;
-					}
-
-					if (ppu.last_ftime != umax)
-					{
-						ppu.last_faddr = 0;
-						return false;
-					}
-
-					utils::prefetch_read(ppu.rdata);
-					utils::prefetch_read(ppu.rdata + 64);
-					ppu.last_faddr = addr;
-					ppu.last_ftime = res.load() & -128;
-					ppu.last_ftsc = utils::get_tsc();
-					return false;
-				}
-				default:
-				{
-					if (count > 20000 && g_cfg.core.perf_report) [[unlikely]]
-					{
-						perf_log.warning("STCX: took too long: %.3fus (%u c)", count / (utils::get_tsc_freq() / 1000'000.), count);
-					}
-
-					break;
-				}
-				}
-
-				if (ppu.last_faddr == addr)
-				{
-					ppu.last_succ++;
-				}
-
-				ppu.last_faddr = 0;
-				return true;
 			}
 
 			// Align address: we do not need the lower 7 bits anymore
@@ -3614,66 +3358,69 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 	{
 		extern atomic_t<u32> liblv2_begin, liblv2_end;
 
+		u32 notify = ppu.res_notify;
+
 		// Avoid notifications from lwmutex or sys_spinlock
-		if (new_data != old_data && (ppu.cia < liblv2_begin || ppu.cia >= liblv2_end))
+		const bool is_liblv2_or_null = (ppu.cia >= liblv2_begin && ppu.cia < liblv2_end);
+
+		if (!is_liblv2_or_null)
 		{
-			u32 notify = ppu.res_notify;
+			// Try to postpone notification to when PPU is asleep or join notifications on the same address
+			// This also optimizes a mutex - won't notify after lock is aqcuired (prolonging the critical section duration), only notifies on unlock
+			const u32 count = vm::reservation_notifier_count(addr, rtime);
 
-			if (notify)
+			switch (count)
 			{
-				if (ppu.res_notify_time == vm::reservation_notifier_count_index(notify).second)
-				{
-					ppu.state += cpu_flag::wait;
-					vm::reservation_notifier_notify(notify);
-				}
-				else
-				{
-					notify = 0;
-				}
-
-				ppu.res_notify = 0;
+			case 0:
+			{
+				// Nothing to do
+				break;
 			}
-
-			if ((addr ^ notify) & -128)
+			case 1:
 			{
-				// Try to postpone notification to when PPU is asleep or join notifications on the same address
-				// This also optimizes a mutex - won't notify after lock is aqcuired (prolonging the critical section duration), only notifies on unlock
-				const auto [count, index] = vm::reservation_notifier_count_index(addr);
-
-				switch (count)
+				// Postpone notifications if there is no pending one OR if there is likely a complex operation on reservation going on
+				// Which consists of multiple used addresses
+				if (ppu.res_notify_postpone_streak <= 4)
 				{
-				case 0:
-				{
-					// Nothing to do
-					break;
-				}
-				case 1:
-				{
-					if (!notify)
+					if (!notify || ((notify & -128) == (addr & -128) && new_data != old_data))
 					{
 						ppu.res_notify = addr;
-						ppu.res_notify_time = index;
+						ppu.res_notify_time = rtime;
+						ppu.res_notify_postpone_streak++;
+						notify = 0;
 						break;
 					}
-
-					// Notify both
-					[[fallthrough]];
 				}
-				default:
+
+				// Notify both
+				[[fallthrough]];
+			}
+			default:
+			{
+				if (cpu_flag::wait - ppu.state)
 				{
-					if (!notify)
-					{
-						ppu.state += cpu_flag::wait;
-					}
+					ppu.state += cpu_flag::wait;
+				}
 
-					vm::reservation_notifier_notify(addr);
-					break;
-				}
-				}
+				vm::reservation_notifier_notify(addr, rtime);
+				break;
+			}
+			}
+		}
+
+		if (notify)
+		{
+			if (auto waiter = vm::reservation_notifier_notify(notify, ppu.res_notify_time, true))
+			{
+				ppu.state += cpu_flag::wait;
+				waiter->notify_all();
 			}
 
-			static_cast<void>(ppu.test_stopped());
+			ppu.res_notify = 0;
+			ppu.res_notify_postpone_streak = 0;
 		}
+
+		static_cast<void>(ppu.test_stopped());
 
 		if (addr == ppu.last_faddr)
 		{
@@ -3682,7 +3429,6 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 
 		ppu.last_faddr = 0;
 		ppu.res_cached = ppu.raddr;
-		ppu.rtime += 128;
 		ppu.raddr = 0;
 		return true;
 	}
@@ -3693,14 +3439,15 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 	// And on failure it has some time to do something else
 	if (notify && ((addr ^ notify) & -128))
 	{
-		if (ppu.res_notify_time == vm::reservation_notifier_count_index(notify).second)
+		if (auto waiter = vm::reservation_notifier_notify(notify, ppu.res_notify_time, true))
 		{
 			ppu.state += cpu_flag::wait;
-			vm::reservation_notifier_notify(notify);
+			waiter->notify_all();
 			static_cast<void>(ppu.test_stopped());
 		}
 
 		ppu.res_notify = 0;
+		ppu.res_notify_postpone_streak = 0;
 	}
 
 	ppu.raddr = 0;
@@ -5211,6 +4958,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 				{
 					// Replace the function with ppu_far_jump
 					fpos++;
+					part.excluded_funcs.emplace_back(func.addr);
 					continue;
 				}
 			}
@@ -5239,6 +4987,11 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 			for (const auto& func : part.get_funcs())
 			{
 				if (func.size == 0)
+				{
+					continue;
+				}
+
+				if (std::count(part.excluded_funcs.begin(), part.excluded_funcs.end(), func.addr))
 				{
 					continue;
 				}
@@ -5337,6 +5090,13 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 				{
 					if (func.size == 0)
 					{
+						continue;
+					}
+
+					if (g_fxo->is_init<ppu_far_jumps_t>() && !g_fxo->get<ppu_far_jumps_t>().get_targets(func.addr, func.size).empty())
+					{
+						// Filter out functions with patches
+						part.excluded_funcs.emplace_back(func.addr);
 						continue;
 					}
 
@@ -5751,7 +5511,11 @@ static void ppu_initialize2(jit_compiler& jit, const ppu_module<lv2_obj>& module
 	std::unique_ptr<Module> _module = std::make_unique<Module>(obj_name, jit.get_context());
 
 	// Initialize target
+#if LLVM_VERSION_MAJOR >= 21 && (LLVM_VERSION_MINOR >= 1 || LLVM_VERSION_MAJOR >= 22)
+	_module->setTargetTriple(Triple(jit_compiler::triple1()));
+#else
 	_module->setTargetTriple(jit_compiler::triple1());
+#endif
 	_module->setDataLayout(jit.get_engine().getTargetMachine()->createDataLayout());
 
 	// Initialize translator
@@ -5776,6 +5540,11 @@ static void ppu_initialize2(jit_compiler& jit, const ppu_module<lv2_obj>& module
 	{
 		if (func.size)
 		{
+			if (std::count(module_part.excluded_funcs.begin(), module_part.excluded_funcs.end(), func.addr))
+			{
+				continue;
+			}
+
 			const auto f = cast<Function>(_module->getOrInsertFunction(fmt::format("__0x%x", func.addr - reloc), _func).getCallee());
 			f->setCallingConv(CallingConv::GHC);
 			f->addParamAttr(1, llvm::Attribute::NoAlias);
@@ -5831,6 +5600,11 @@ static void ppu_initialize2(jit_compiler& jit, const ppu_module<lv2_obj>& module
 
 			if (mod_func.size)
 			{
+				if (std::count(module_part.excluded_funcs.begin(), module_part.excluded_funcs.end(), mod_func.addr))
+				{
+					continue;
+				}
+
 				num_func++;
 				guest_code_size += mod_func.size;
 				max_addr = std::max<u32>(max_addr, mod_func.addr + mod_func.size);

@@ -768,7 +768,7 @@ public:
 	std::shared_ptr<utils::shm> shm; // SPU memory
 	const std::add_pointer_t<u8> ls; // SPU LS pointer
 	const u32 option; // sys_spu_thread_initialize option
-	const u32 lv2_id; // The actual id that is used by syscalls
+	u32 lv2_id; // The actual id that is used by syscalls
 	u32 spurs_addr = 0;
 	bool spurs_waited = false;
 	bool spurs_entered_wait = false;
@@ -824,6 +824,7 @@ public:
 	u8 cpu_work_iteration_count = 0;
 
 	std::array<v128, 0x4000> stack_mirror; // Return address information
+	std::array<u32, 8> raddr_busy_wait_addr{}; // Return address information
 
 	const char* current_func{}; // Current STOP or RDCH blocking function
 	u64 start_time{}; // Starting time of STOP or RDCH bloking function
@@ -900,7 +901,8 @@ public:
 
 	// Returns true if reservation existed but was just discovered to be lost
 	// It is safe to use on any address, even if not directly accessed by SPU (so it's slower)
-	bool reservation_check(u32 addr, const decltype(rdata)& data) const;
+	// Optionally pass a known allocated address for internal optimization (the current Effective-Address of the MFC command)
+	bool reservation_check(u32 addr, const decltype(rdata)& data, u32 current_eal = 0) const;
 	static bool reservation_check(u32 addr, u32 hash, atomic_t<u64, 64>* range_lock);
 	usz register_cache_line_waiter(u32 addr);
 	void deregister_cache_line_waiter(usz index);

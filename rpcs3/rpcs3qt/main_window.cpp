@@ -23,6 +23,7 @@
 #include "skylander_dialog.h"
 #include "infinity_dialog.h"
 #include "dimensions_dialog.h"
+#include "kamen_rider_dialog.h"
 #include "cheat_manager.h"
 #include "patch_manager_dialog.h"
 #include "patch_creator_dialog.h"
@@ -2441,7 +2442,7 @@ void main_window::ShowOptionalGamePreparations(const QString& title, const QStri
 				}
 			}
 		}
-		
+
 		if (!game_data_shortcuts.empty() && !locations.empty())
 		{
 			m_game_list_frame->CreateShortcuts(game_data_shortcuts, locations);
@@ -2999,6 +3000,12 @@ void main_window::CreateConnects()
 		dim_dlg->show();
 	});
 
+	connect(ui->actionManage_KamenRider_RideGate, &QAction::triggered, this, [this]
+	{
+		kamen_rider_dialog* kam_dlg = kamen_rider_dialog::get_dlg(this);
+		kam_dlg->show();
+	});
+
 	connect(ui->actionManage_Cheats, &QAction::triggered, this, [this]
 	{
 		cheat_manager_dialog* cheat_manager = cheat_manager_dialog::get_dlg(this);
@@ -3318,6 +3325,17 @@ void main_window::CreateConnects()
 		const int idx = ui->sizeSlider->value() + val;
 		m_save_slider_pos = true;
 		ResizeIcons(idx);
+	});
+
+	connect(m_game_list_frame, &game_list_frame::RequestSaveStateManager, this, [this](const game_info& gameinfo)
+	{
+		savestate_manager_dialog* manager = new savestate_manager_dialog(m_gui_settings, std::vector<game_info>{gameinfo});
+		connect(this, &main_window::RequestDialogRepaint, manager, &savestate_manager_dialog::HandleRepaintUiRequest);
+		connect(manager, &savestate_manager_dialog::RequestBoot, this, [this, gameinfo](const std::string& path)
+		{
+			Boot(path, gameinfo->info.serial, false, false, cfg_mode::custom, "");
+		});
+		manager->show();
 	});
 
 	connect(m_list_mode_act_group, &QActionGroup::triggered, this, [this](QAction* act)
