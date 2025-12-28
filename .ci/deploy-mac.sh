@@ -14,10 +14,17 @@ AVVER="${COMM_TAG}-${COMM_COUNT}"
 echo "AVVER=$AVVER" >> ../.ci/ci-vars.env
 
 cd bin
-mkdir "rpcs3.app/Contents/lib/"
+mkdir "rpcs3.app/Contents/lib/" || true
+mkdir -p "rpcs3.app/Contents/Resources/vulkan/icd.d" || true
+wget https://github.com/KhronosGroup/MoltenVK/releases/download/v1.4.1/MoltenVK-macos-privateapi.tar
+tar -xvf MoltenVK-macos-privateapi.tar
+cp "MoltenVK/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib" "rpcs3.app/Contents/Frameworks/libMoltenVK.dylib"
+cp "MoltenVK/MoltenVK/dynamic/dylib/macOS/MoltenVK_icd.json" "rpcs3.app/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json"
+sed -i '' "s/.\//..\/..\/..\/Frameworks\//g" "rpcs3.app/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json"
 
-cp "/usr/local/opt/llvm@$LLVM_COMPILER_VER/lib/c++/libc++abi.1.0.dylib" "rpcs3.app/Contents/Frameworks/libc++abi.1.dylib"
-cp "/usr/local/opt/llvm@$LLVM_COMPILER_VER/lib/unwind/libunwind.1.dylib" "rpcs3.app/Contents/Frameworks/libunwind.1.dylib"
+cp "$(realpath /usr/local/opt/llvm@$LLVM_COMPILER_VER/lib/c++/libc++abi.1.0.dylib)" "rpcs3.app/Contents/Frameworks/libc++abi.1.dylib"
+cp "$(realpath /usr/local/opt/llvm@$LLVM_COMPILER_VER/lib/unwind/libunwind.1.dylib)" "rpcs3.app/Contents/Frameworks/libunwind.1.dylib"
+cp "$(realpath /usr/local/opt/gcc/lib/gcc/current/libgcc_s.1.1.dylib)" "rpcs3.app/Contents/Frameworks/libgcc_s.1.1.dylib"
 cp "$(realpath /usr/local/lib/libsharpyuv.0.dylib)" "rpcs3.app/Contents/lib/libsharpyuv.0.dylib"
 cp "$(realpath /usr/local/lib/libintl.8.dylib)" "rpcs3.app/Contents/lib/libintl.8.dylib"
 

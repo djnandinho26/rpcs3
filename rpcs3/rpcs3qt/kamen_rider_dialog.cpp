@@ -31,7 +31,7 @@ static const std::map<const std::pair<const u8, const u8>, const std::string> li
 	{{0x12, 0x30}, "Kamen Rider Wizard Fire"},
 	{{0x13, 0x40}, "Kamen Rider Fourze Light"},
 	{{0x14, 0x20}, "Kamen Rider 000 Water"},
-	{{0x15, 0x10}, "Kamen Rider Double Wind"},
+	{{0x15, 0x10}, "Kamen Rider W (Double) Wind"},
 	{{0x16, 0x50}, "Kamen Rider Decade Dark"},
 	{{0x17, 0x50}, "Kamen Rider Kiva Dark"},
 	{{0x18, 0x40}, "Kamen Rider Den-O Light"},
@@ -160,7 +160,7 @@ kamen_rider_creator_dialog::kamen_rider_creator_dialog(QWidget* parent)
 
 	setLayout(vbox_panel);
 
-	connect(combo_figlist, QOverload<int>::of(&QComboBox::currentIndexChanged), [=](int index)
+	connect(combo_figlist, &QComboBox::currentIndexChanged, [=](int index)
 		{
 			const u16 fig_info = combo_figlist->itemData(index).toUInt();
 			if (fig_info != 0xFFFF)
@@ -243,7 +243,7 @@ kamen_rider_creator_dialog::kamen_rider_creator_dialog(QWidget* parent)
 
 	connect(btn_cancel, &QAbstractButton::clicked, this, &QDialog::reject);
 
-	connect(co_compl, QOverload<const QString&>::of(&QCompleter::activated), [=](const QString& text)
+	connect(co_compl, qOverload<const QString&>(&QCompleter::activated), [=](const QString& text)
 		{
 			combo_figlist->setCurrentText(text);
 			combo_figlist->setCurrentIndex(combo_figlist->findText(text));
@@ -409,7 +409,7 @@ void kamen_rider_dialog::update_edits()
 			}
 			else
 			{
-				display_string = QString(tr("Unknown (Id:%1 Var:%2)")).arg(fig_id).arg(fig_type);
+				display_string = QString(tr("Unknown (Id:%1 Type:%2)")).arg(fig_id).arg(fig_type);
 			}
 		}
 		else

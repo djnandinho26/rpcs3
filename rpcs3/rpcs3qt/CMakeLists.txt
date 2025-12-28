@@ -8,6 +8,7 @@ add_library(rpcs3_ui STATIC
     camera_settings_dialog.cpp
     cg_disasm_window.cpp
     cheat_manager.cpp
+    clans_settings_dialog.cpp
     config_adapter.cpp
     config_checker.cpp
     curl_handle.cpp
@@ -99,6 +100,7 @@ add_library(rpcs3_ui STATIC
     shortcut_handler.cpp
     shortcut_settings.cpp
     skylander_dialog.cpp
+    sound_effect_manager_dialog.cpp
     syntax_highlighter.cpp
     system_cmd_dialog.cpp
     table_item_delegate.cpp

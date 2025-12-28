@@ -53,7 +53,7 @@ struct cfg_root : cfg::node
 			}
 		};
 
-		fifo_setting rsx_fifo_accuracy{this, "RSX FIFO Accuracy", rsx_fifo_mode::fast };
+		fifo_setting rsx_fifo_accuracy{this, "RSX FIFO Fetch Accuracy", rsx_fifo_mode::atomic };
 		cfg::_bool spu_verification{ this, "SPU Verification", true }; // Should be enabled
 		cfg::_bool spu_cache{ this, "SPU Cache", true };
 		cfg::_bool spu_prof{ this, "SPU Profiler", false };
@@ -322,6 +322,7 @@ struct cfg_root : cfg::node
 
 		cfg::_enum<np_psn_status> psn_status{this, "PSN status", np_psn_status::disabled};
 		cfg::string country{this, "PSN Country", "us"};
+		cfg::_bool clans_enabled{this, "Clans Enabled", false};
 	} net{this};
 
 	struct node_savestate : cfg::node

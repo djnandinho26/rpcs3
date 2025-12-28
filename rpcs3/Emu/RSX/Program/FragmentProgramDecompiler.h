@@ -1,7 +1,8 @@
 #pragma once
 #include "ShaderParam.h"
-#include "FragmentProgramRegister.h"
 #include "RSXFragmentProgram.h"
+
+#include "Assembler/CFG.h"
 
 #include <sstream>
 #include <unordered_map>
@@ -39,20 +40,17 @@ class FragmentProgramDecompiler
 	SRC2 src2;
 	u32  opflags;
 
+	const rsx::assembler::Instruction* m_instruction;
+
 	std::string main;
 	u32& m_size;
 	u32 m_const_index = 0;
-	u32 m_offset;
 	u32 m_location = 0;
 	bool m_is_valid_ucode = true;
 
 	u32 m_loop_count;
 	int m_code_level;
-	std::vector<u32> m_end_offsets;
-	std::vector<u32> m_else_offsets;
 	std::unordered_map<u32, u32> m_constant_offsets;
-
-	std::array<rsx::MixedPrecisionRegister, 64> temp_registers;
 
 	std::string GetMask() const;
 
@@ -101,7 +99,6 @@ class FragmentProgramDecompiler
 
 protected:
 	const RSXFragmentProgram &m_prog;
-	u32 m_ctrl = 0;
 
 	/** returns the type name of float vectors.
 	 */
@@ -174,7 +171,6 @@ public:
 
 		// Decoded properties (out)
 		bool has_lit_op = false;
-		bool has_gather_op = false;
 		bool has_no_output = false;
 		bool has_discard_op = false;
 		bool has_tex_op = false;
