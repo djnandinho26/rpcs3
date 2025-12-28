@@ -1,16 +1,23 @@
-name: sync-fork
+name: Sync Fork
+
 on:
   schedule:
-    - cron: '0 0 * * *'
-  workflow_dispatch: { }
+    - cron: '0 0 * * *' # Executa diariamente à meia-noite
+  workflow_dispatch: # Permite execução manual pelo botão "Run workflow"
+
 jobs:
   sync:
+    name: Sync with Upstream
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # Obrigatório para permitir que o bot atualize seu código
+
     steps:
-      - run: gh repo sync $REPOSITORY -b $BRANCH_NAME
+      - name: Checkout target repo
+        uses: actions/checkout@v4 # Versão estável em 2025
+
+      - name: Sync upstream changes
+        # GH_TOKEN é a variável de ambiente padrão que a CLI do GitHub (gh) procura
+        run: gh repo sync ${{ github.repository }} -b ${{ github.ref_name }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPOSITORY: ${{ github.repository }}
-          BRANCH_NAME: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
