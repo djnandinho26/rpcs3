@@ -78,6 +78,7 @@
 #include "Loader/PUP.h"
 #include "Loader/TAR.h"
 #include "Loader/PSF.h"
+#include "Loader/ISO.h"
 #include "Loader/mself.hpp"
 
 #include "Utilities/Thread.h"
@@ -221,7 +222,7 @@ bool main_window::Init([[maybe_unused]] bool with_cli_boot)
 
 	if (enable_play_last)
 	{
-		ui->sysPauseAct->setText(tr("&Play last played game"));
+		ui->sysPauseAct->setText(tr("&Play Last Played Game"));
 		ui->sysPauseAct->setIcon(m_icon_play);
 		ui->toolbar_start->setToolTip(start_tooltip);
 	}
@@ -542,8 +543,16 @@ void main_window::Boot(const std::string& path, const std::string& title_id, boo
 	}
 	else
 	{
+		std::string game_path = Emu.GetBoot();
+		if (game_path.starts_with(iso_device::virtual_device_name))
+		{
+			const auto device = fs::get_virtual_device(iso_device::virtual_device_name + "/");
+			const auto iso_dev = ensure(dynamic_cast<const iso_device*>(device.get()));
+			game_path = iso_dev->get_loaded_iso();
+		}
+
 		gui_log.success("Boot successful.");
-		AddRecentAction(gui::Recent_Game(QString::fromStdString(Emu.GetBoot()), QString::fromStdString(Emu.GetTitleAndTitleID())), false);
+		AddRecentAction(gui::Recent_Game(QString::fromStdString(game_path), QString::fromStdString(Emu.GetTitleAndTitleID())), false);
 	}
 
 	if (refresh_list)
@@ -569,6 +578,7 @@ void main_window::BootElf()
 		"SELF files (EBOOT.BIN *.self);;"
 		"BOOT files (*BOOT.BIN);;"
 		"BIN files (*.bin);;"
+		"ISO files (*.iso);;"
 		"All executable files (*.SAVESTAT.zst *.SAVESTAT.gz *.SAVESTAT *.sprx *.SPRX *.self *.SELF *.bin *.BIN *.prx *.PRX *.elf *.ELF *.o *.O);;"
 		"All files (*.*)"),
 		Q_NULLPTR, QFileDialog::DontResolveSymlinks);
@@ -688,6 +698,34 @@ void main_window::BootGame()
 
 	gui_log.notice("Booting from BootGame...");
 	Boot(dir_path.toStdString(), "", false, true);
+}
+
+void main_window::BootISO()
+{
+	bool stopped = false;
+
+	if (Emu.IsRunning())
+	{
+		Emu.Pause();
+		stopped = true;
+	}
+
+	const QString path_last_game = m_gui_settings->GetValue(gui::fd_boot_game).toString();
+	const QString path = QFileDialog::getOpenFileName(this, tr("Select ISO"), path_last_game, tr("ISO files (*.iso);;All files (*.*)"));
+
+	if (path.isEmpty())
+	{
+		if (stopped)
+		{
+			Emu.Resume();
+		}
+		return;
+	}
+
+	m_gui_settings->SetValue(gui::fd_boot_game, QFileInfo(path).dir().path());
+
+	gui_log.notice("Booting from BootISO...");
+	Boot(path.toStdString(), "", true, true);
 }
 
 void main_window::BootVSH()
@@ -1777,6 +1815,7 @@ void main_window::RepaintToolBarIcons()
 	ui->toolbar_grid    ->setIcon(icon(":/Icons/grid.png"));
 	ui->toolbar_list    ->setIcon(icon(":/Icons/list.png"));
 	ui->toolbar_refresh ->setIcon(icon(":/Icons/refresh.png"));
+	ui->toolbar_rpcn	->setIcon(icon(":/Icons/rpcn.png"));
 	ui->toolbar_stop    ->setIcon(icon(":/Icons/stop.png"));
 
 	ui->sysStopAct->setIcon(icon(":/Icons/stop.png"));
@@ -2400,7 +2439,7 @@ void main_window::CreateShortCuts(const std::map<std::string, QString>& paths, b
 
 		if (!game_data_shortcuts.empty() && !locations.empty())
 		{
-			m_game_list_frame->CreateShortcuts(game_data_shortcuts, locations);
+			m_game_list_frame->actions()->CreateShortcuts(game_data_shortcuts, locations);
 		}
 	}
 }
@@ -2427,7 +2466,7 @@ void main_window::PrecompileCachesFromInstalledPackages(const std::map<std::stri
 
 	if (!game_data.empty())
 	{
-		m_game_list_frame->BatchCreateCPUCaches(game_data, true);
+		m_game_list_frame->actions()->BatchCreateCPUCaches(game_data, true);
 	}
 }
 
@@ -2459,8 +2498,8 @@ void main_window::CreateActions()
 	m_icon_size_act_group->addAction(ui->setIconSizeLargeAct);
 
 	m_list_mode_act_group = new QActionGroup(this);
-	m_list_mode_act_group->addAction(ui->setlistModeListAct);
-	m_list_mode_act_group->addAction(ui->setlistModeGridAct);
+	m_list_mode_act_group->addAction(ui->setListModeAct);
+	m_list_mode_act_group->addAction(ui->setGridModeAct);
 }
 
 void main_window::CreateConnects()
@@ -2468,6 +2507,7 @@ void main_window::CreateConnects()
 	connect(ui->bootElfAct, &QAction::triggered, this, &main_window::BootElf);
 	connect(ui->bootTestAct, &QAction::triggered, this, &main_window::BootTest);
 	connect(ui->bootGameAct, &QAction::triggered, this, &main_window::BootGame);
+	connect(ui->bootIsoAct, &QAction::triggered, this, &main_window::BootISO);
 	connect(ui->bootVSHAct, &QAction::triggered, this, &main_window::BootVSH);
 	connect(ui->actionopen_rsx_capture, &QAction::triggered, this, [this](){ BootRsxCapture(); });
 	connect(ui->actionCreate_RSX_Capture, &QAction::triggered, this, []()
@@ -2517,6 +2557,22 @@ void main_window::CreateConnects()
 
 		QStringList paths;
 		paths << dir;
+		AddGamesFromDirs(std::move(paths));
+	});
+
+	connect(ui->addIsoGamesAct, &QAction::triggered, this, [this]()
+	{
+		if (!m_gui_settings->GetBootConfirmation(this))
+		{
+			return;
+		}
+
+		QStringList paths = QFileDialog::getOpenFileNames(this, tr("Select ISO files to add"), QString::fromStdString(fs::get_config_dir()), tr("ISO files (*.iso);;All files (*.*)"));
+		if (paths.isEmpty())
+		{
+			return;
+		}
+
 		AddGamesFromDirs(std::move(paths));
 	});
 
@@ -2721,15 +2777,43 @@ void main_window::CreateConnects()
 	});
 	connect(ui->exitAct, &QAction::triggered, this, &QWidget::close);
 
-	connect(ui->batchCreateCPUCachesAct, &QAction::triggered, m_game_list_frame, [list = m_game_list_frame]() { list->BatchCreateCPUCaches(); });
-	connect(ui->batchRemoveCustomConfigurationsAct, &QAction::triggered, m_game_list_frame, &game_list_frame::BatchRemoveCustomConfigurations);
-	connect(ui->batchRemoveCustomPadConfigurationsAct, &QAction::triggered, m_game_list_frame, &game_list_frame::BatchRemoveCustomPadConfigurations);
-	connect(ui->batchRemoveShaderCachesAct, &QAction::triggered, m_game_list_frame, &game_list_frame::BatchRemoveShaderCaches);
-	connect(ui->batchRemovePPUCachesAct, &QAction::triggered, m_game_list_frame, &game_list_frame::BatchRemovePPUCaches);
-	connect(ui->batchRemoveSPUCachesAct, &QAction::triggered, m_game_list_frame, &game_list_frame::BatchRemoveSPUCaches);
-	connect(ui->removeHDD1CachesAct, &QAction::triggered, this, &main_window::RemoveHDD1Caches);
-	connect(ui->removeAllCachesAct, &QAction::triggered, this, &main_window::RemoveAllCaches);
-	connect(ui->removeSavestatesAct, &QAction::triggered, this, &main_window::RemoveSavestates);
+	connect(ui->batchCreateCPUCachesAct, &QAction::triggered, this, [this]()
+	{
+		m_game_list_frame->actions()->BatchCreateCPUCaches({}, false, true);
+	});
+	connect(ui->batchRemoveCustomConfigurationsAct, &QAction::triggered, this, [this]()
+	{
+		m_game_list_frame->actions()->BatchRemoveCustomConfigurations({}, true);
+	});
+	connect(ui->batchRemoveCustomPadConfigurationsAct, &QAction::triggered, this, [this]()
+	{
+		m_game_list_frame->actions()->BatchRemoveCustomPadConfigurations({}, true);
+	});
+	connect(ui->batchRemoveShaderCachesAct, &QAction::triggered, this, [this]()
+	{
+		m_game_list_frame->actions()->BatchRemoveShaderCaches({}, true);
+	});
+	connect(ui->batchRemovePPUCachesAct, &QAction::triggered, this, [this]()
+	{
+		m_game_list_frame->actions()->BatchRemovePPUCaches({}, true);
+	});
+	connect(ui->batchRemoveSPUCachesAct, &QAction::triggered, this, [this]()
+	{
+		m_game_list_frame->actions()->BatchRemoveSPUCaches({}, true);
+	});
+	connect(ui->removeHDD1CachesAct, &QAction::triggered, this, [this]()
+	{
+		m_game_list_frame->actions()->BatchRemoveHDD1Caches({}, true);
+	});
+	connect(ui->removeAllCachesAct, &QAction::triggered, this, [this]()
+	{
+		m_game_list_frame->actions()->BatchRemoveAllCaches({}, true);
+	});
+	connect(ui->removeSavestatesAct, &QAction::triggered, this, [this]()
+	{
+		m_game_list_frame->actions()->SetContentList(game_list_actions::content_type::SAVESTATES, {});
+		m_game_list_frame->actions()->BatchRemoveContentLists({}, true);
+	});
 	connect(ui->cleanUpGameListAct, &QAction::triggered, this, &main_window::CleanUpGameList);
 
 	connect(ui->removeFirmwareCacheAct, &QAction::triggered, this, &main_window::RemoveFirmwareCache);
@@ -2792,6 +2876,7 @@ void main_window::CreateConnects()
 	connect(ui->confAudioAct,  &QAction::triggered, this, [open_settings]() { open_settings(2); });
 	connect(ui->confIOAct,     &QAction::triggered, this, [open_settings]() { open_settings(3); });
 	connect(ui->confSystemAct, &QAction::triggered, this, [open_settings]() { open_settings(4); });
+	connect(ui->confNetwrkAct, &QAction::triggered, this, [open_settings]() { open_settings(5); });
 	connect(ui->confAdvAct,    &QAction::triggered, this, [open_settings]() { open_settings(6); });
 	connect(ui->confEmuAct,    &QAction::triggered, this, [open_settings]() { open_settings(7); });
 	connect(ui->confGuiAct,    &QAction::triggered, this, [open_settings]() { open_settings(8); });
@@ -2903,15 +2988,17 @@ void main_window::CreateConnects()
 
 	connect(ui->confCamerasAct, &QAction::triggered, this, [this]()
 	{
-		camera_settings_dialog dlg(this);
-		dlg.exec();
+		camera_settings_dialog* dlg = new camera_settings_dialog(this);
+		dlg->open();
 	});
 
-	connect(ui->confRPCNAct, &QAction::triggered, this, [this]()
+	const auto open_rpcn_settings = [this]
 	{
 		rpcn_settings_dialog dlg(this);
 		dlg.exec();
-	});
+	};
+
+	connect(ui->confRPCNAct, &QAction::triggered, this, open_rpcn_settings);
 
 	connect(ui->confClansAct, &QAction::triggered, this, [this]()
 	{
@@ -2920,7 +3007,7 @@ void main_window::CreateConnects()
 			QMessageBox::critical(this, tr("Error: Emulation Running"), tr("You need to stop the emulator before editing Clans connection information!"), QMessageBox::Ok);
 			return;
 		}
-		
+
 		clans_settings_dialog dlg(this);
 		dlg.exec();
 	});
@@ -3331,7 +3418,7 @@ void main_window::CreateConnects()
 
 	connect(m_list_mode_act_group, &QActionGroup::triggered, this, [this](QAction* act)
 	{
-		const bool is_list_act = act == ui->setlistModeListAct;
+		const bool is_list_act = act == ui->setListModeAct;
 		if (is_list_act == m_is_list_mode)
 			return;
 
@@ -3369,10 +3456,11 @@ void main_window::CreateConnects()
 		}
 	});
 
-	connect(ui->toolbar_controls, &QAction::triggered, this, open_pad_settings);
 	connect(ui->toolbar_config, &QAction::triggered, this, [=]() { open_settings(0); });
-	connect(ui->toolbar_list, &QAction::triggered, this, [this]() { ui->setlistModeListAct->trigger(); });
-	connect(ui->toolbar_grid, &QAction::triggered, this, [this]() { ui->setlistModeGridAct->trigger(); });
+	connect(ui->toolbar_controls, &QAction::triggered, this, open_pad_settings);
+	connect(ui->toolbar_rpcn, &QAction::triggered, this, open_rpcn_settings);
+	connect(ui->toolbar_list, &QAction::triggered, this, [this]() { ui->setListModeAct->trigger(); });
+	connect(ui->toolbar_grid, &QAction::triggered, this, [this]() { ui->setGridModeAct->trigger(); });
 
 	connect(ui->sizeSlider, &QSlider::valueChanged, this, &main_window::ResizeIcons);
 	connect(ui->sizeSlider, &QSlider::sliderReleased, this, [this]
@@ -3622,9 +3710,9 @@ void main_window::ConfigureGuiFromSettings()
 
 	// handle icon size options
 	if (m_is_list_mode)
-		ui->setlistModeListAct->setChecked(true);
+		ui->setListModeAct->setChecked(true);
 	else
-		ui->setlistModeGridAct->setChecked(true);
+		ui->setGridModeAct->setChecked(true);
 
 	const int icon_size_index = m_gui_settings->GetValue(m_is_list_mode ? gui::gl_iconSize : gui::gl_iconSizeGrid).toInt();
 	m_other_slider_pos = m_gui_settings->GetValue(!m_is_list_mode ? gui::gl_iconSize : gui::gl_iconSizeGrid).toInt();
@@ -3652,67 +3740,6 @@ void main_window::SetIconSizeActions(int idx) const
 		ui->setIconSizeMediumAct->setChecked(true);
 	else
 		ui->setIconSizeLargeAct->setChecked(true);
-}
-
-void main_window::RemoveHDD1Caches()
-{
-	if (fs::remove_all(rpcs3::utils::get_hdd1_dir() + "caches", false))
-	{
-		QMessageBox::information(this, tr("HDD1 Caches Removed"), tr("HDD1 caches successfully removed"));
-	}
-	else
-	{
-		QMessageBox::warning(this, tr("Error"), tr("Could not remove HDD1 caches"));
-	}
-}
-
-void main_window::RemoveAllCaches()
-{
-	if (QMessageBox::question(this, tr("Confirm Removal"), tr("Remove all caches?")) != QMessageBox::Yes)
-		return;
-
-	const std::string cache_base_dir = rpcs3::utils::get_cache_dir();
-	u64 caches_count = 0;
-	u64 caches_removed = 0;
-
-	for (const game_info& game : m_game_list_frame->GetGameInfo()) // Loop on detected games
-	{
-		if (game && QString::fromStdString(game->info.category) != cat::cat_ps3_os && fs::exists(cache_base_dir + game->info.serial)) // If not OS category and cache exists
-		{
-			caches_count++;
-
-			if (fs::remove_all(cache_base_dir + game->info.serial))
-			{
-				caches_removed++;
-			}
-		}
-	}
-
-	if (caches_count == caches_removed)
-	{
-		QMessageBox::information(this, tr("Caches Removed"), tr("%0 cache(s) successfully removed").arg(caches_removed));
-	}
-	else
-	{
-		QMessageBox::warning(this, tr("Error"), tr("Could not remove %0 of %1 cache(s)").arg(caches_count - caches_removed).arg(caches_count));
-	}
-
-	RemoveHDD1Caches();
-}
-
-void main_window::RemoveSavestates()
-{
-	if (QMessageBox::question(this, tr("Confirm Removal"), tr("Remove savestates?")) != QMessageBox::Yes)
-		return;
-
-	if (fs::remove_all(fs::get_config_dir() + "savestates", false))
-	{
-		QMessageBox::information(this, tr("Savestates Removed"), tr("Savestates successfully removed"));
-	}
-	else
-	{
-		QMessageBox::warning(this, tr("Error"), tr("Could not remove savestates"));
-	}
 }
 
 void main_window::CleanUpGameList()
@@ -3986,7 +4013,7 @@ main_window::drop_type main_window::IsValidFile(const QMimeData& md, QStringList
 		const QString suffix_lo = info.suffix().toLower();
 
 		// check for directories first, only valid if all other paths led to directories until now.
-		if (info.isDir())
+		if (info.isDir() || is_file_iso(path.toStdString()))
 		{
 			if (type != drop_type::drop_dir && type != drop_type::drop_error)
 			{
@@ -4072,15 +4099,18 @@ main_window::drop_type main_window::IsValidFile(const QMimeData& md, QStringList
 
 void main_window::dropEvent(QDropEvent* event)
 {
-	event->accept();
-
 	QStringList drop_paths;
+	const drop_type type = IsValidFile(*event->mimeData(), &drop_paths);
 
-	switch (IsValidFile(*event->mimeData(), &drop_paths)) // get valid file paths and drop type
+	if (type != drop_type::drop_error)
+	{
+		event->acceptProposedAction();
+	}
+
+	switch (type) // get valid file paths and drop type
 	{
 	case drop_type::drop_error:
 	{
-		event->ignore();
 		break;
 	}
 	case drop_type::drop_rap_edat_pkg: // install the packages
@@ -4162,15 +4192,16 @@ void main_window::dropEvent(QDropEvent* event)
 
 void main_window::dragEnterEvent(QDragEnterEvent* event)
 {
-	event->setAccepted(IsValidFile(*event->mimeData()) != drop_type::drop_error);
+	if (IsValidFile(*event->mimeData()) != drop_type::drop_error)
+	{
+		event->acceptProposedAction();
+	}
 }
 
 void main_window::dragMoveEvent(QDragMoveEvent* event)
 {
-	event->setAccepted(IsValidFile(*event->mimeData()) != drop_type::drop_error);
-}
-
-void main_window::dragLeaveEvent(QDragLeaveEvent* event)
-{
-	event->accept();
+	if (IsValidFile(*event->mimeData()) != drop_type::drop_error)
+	{
+		event->acceptProposedAction();
+	}
 }
