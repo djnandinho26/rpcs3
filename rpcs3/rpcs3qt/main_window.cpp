@@ -35,9 +35,9 @@
 #include "camera_settings_dialog.h"
 #include "ps_move_tracker_dialog.h"
 #include "ipc_settings_dialog.h"
-#include "shortcut_utils.h"
 #include "config_checker.h"
 #include "shortcut_dialog.h"
+#include "steam_utils.h"
 #include "system_cmd_dialog.h"
 #include "emulated_pad_settings_dialog.h"
 #include "emulated_logitech_g27_settings_dialog.h"
@@ -935,22 +935,40 @@ bool main_window::HandlePackageInstallation(QStringList file_paths, bool from_bo
 	}
 
 	std::vector<compat::package_info> packages;
+	std::set<gui::utils::shortcut_location> shortcut_locations;
 	bool precompile_caches = false;
-	bool create_desktop_shortcuts = false;
-	bool create_app_shortcut = false;
+	bool canceled = false;
 
 	game_compatibility* compat = m_game_list_frame ? m_game_list_frame->GetGameCompatibility() : nullptr;
 
 	// Let the user choose the packages to install and select the order in which they shall be installed.
 	pkg_install_dialog dlg(file_paths, compat, this);
-	connect(&dlg, &QDialog::accepted, this, [&]()
+	connect(&dlg, &QDialog::finished, this, [&](int result)
 	{
+		if (result != QDialog::Accepted)
+		{
+			canceled = true;
+			return;
+		}
+
 		packages = dlg.get_paths_to_install();
 		precompile_caches = dlg.precompile_caches();
-		create_desktop_shortcuts = dlg.create_desktop_shortcuts();
-		create_app_shortcut = dlg.create_app_shortcut();
+
+		if (dlg.create_desktop_shortcuts())
+			shortcut_locations.insert(gui::utils::shortcut_location::desktop);
+
+		if (dlg.create_app_shortcut())
+			shortcut_locations.insert(gui::utils::shortcut_location::applications);
+
+		if (dlg.create_steam_shortcut())
+			shortcut_locations.insert(gui::utils::shortcut_location::steam);
 	});
 	dlg.exec();
+
+	if (canceled)
+	{
+		return false;
+	}
 
 	if (!from_boot)
 	{
@@ -1124,7 +1142,7 @@ bool main_window::HandlePackageInstallation(QStringList file_paths, bool from_bo
 
 		if (!bootable_paths_installed.empty())
 		{
-			m_game_list_frame->AddRefreshedSlot([this, create_desktop_shortcuts, precompile_caches, create_app_shortcut, paths = std::move(bootable_paths_installed)](std::set<std::string>& claimed_paths) mutable
+			m_game_list_frame->AddRefreshedSlot([this, shortcut_locations, precompile_caches, paths = std::move(bootable_paths_installed)](std::set<std::string>& claimed_paths) mutable
 			{
 				// Try to claim operations on ID
 				for (auto it = paths.begin(); it != paths.end();)
@@ -1142,7 +1160,7 @@ bool main_window::HandlePackageInstallation(QStringList file_paths, bool from_bo
 					}
 				}
 
-				CreateShortCuts(paths, create_desktop_shortcuts, create_app_shortcut);
+				CreateShortCuts(paths, shortcut_locations);
 
 				if (precompile_caches)
 				{
@@ -1507,7 +1525,7 @@ void main_window::HandlePupInstallation(const QString& file_path, const QString&
 		return;
 	}
 
-	static constexpr std::string_view cur_version = "4.92";
+	static constexpr std::string_view cur_version = "4.93";
 
 	std::string version_string;
 
@@ -2358,6 +2376,7 @@ void main_window::ShowOptionalGamePreparations(const QString& title, const QStri
 #else
 	QCheckBox* quick_check = new QCheckBox(tr("Add launcher shortcut(s)"));
 #endif
+
 	QLabel* label = new QLabel(tr("%1\nWould you like to precompile caches and install shortcuts to the installed software? (%2 new software detected)\n\n").arg(message).arg(bootable_paths.size()), dlg);
 
 	vlayout->addWidget(label);
@@ -2369,6 +2388,17 @@ void main_window::ShowOptionalGamePreparations(const QString& title, const QStri
 	vlayout->addWidget(quick_check);
 	vlayout->addStretch(3);
 
+	QCheckBox* steam_check = nullptr;
+	if (gui::utils::steam_shortcut::steam_installed())
+	{
+		const bool steam_running = gui::utils::steam_shortcut::is_steam_running();
+		steam_check = new QCheckBox(steam_running ? tr("Add Steam Shortcut(s) (Steam must be closed)") : tr("Add Steam shortcut(s)"));
+		steam_check->setEnabled(!steam_running);
+
+		vlayout->addWidget(steam_check);
+		vlayout->addStretch(3);
+	}
+
 	QDialogButtonBox* btn_box = new QDialogButtonBox(QDialogButtonBox::Ok);
 
 	vlayout->addWidget(btn_box);
@@ -2377,13 +2407,22 @@ void main_window::ShowOptionalGamePreparations(const QString& title, const QStri
 	connect(btn_box, &QDialogButtonBox::accepted, this, [=, this, paths = std::move(bootable_paths)]()
 	{
 		const bool precompile_caches = precompile_check->isChecked();
-		const bool create_desktop_shortcuts = desk_check->isChecked();
-		const bool create_app_shortcut = quick_check->isChecked();
+
+		std::set<gui::utils::shortcut_location> shortcut_locations;
+
+		if (desk_check->isChecked())
+			shortcut_locations.insert(gui::utils::shortcut_location::desktop);
+
+		if (quick_check->isChecked())
+			shortcut_locations.insert(gui::utils::shortcut_location::applications);
+
+		if (steam_check && steam_check->isChecked())
+			shortcut_locations.insert(gui::utils::shortcut_location::steam);
 
 		dlg->hide();
 		dlg->accept();
 
-		CreateShortCuts(paths, create_desktop_shortcuts, create_app_shortcut);
+		CreateShortCuts(paths, shortcut_locations);
 
 		if (precompile_caches)
 		{
@@ -2395,52 +2434,40 @@ void main_window::ShowOptionalGamePreparations(const QString& title, const QStri
 	dlg->open();
 }
 
-void main_window::CreateShortCuts(const std::map<std::string, QString>& paths, bool create_desktop_shortcuts, bool create_app_shortcut)
+void main_window::CreateShortCuts(const std::map<std::string, QString>& paths, std::set<gui::utils::shortcut_location> locations)
 {
 	if (paths.empty()) return;
 
-	std::set<gui::utils::shortcut_location> locations;
-
 #ifdef _WIN32
 	locations.insert(gui::utils::shortcut_location::rpcs3_shortcuts);
+#else
+	if (locations.empty())
+	{
+		return;
+	}
 #endif
-	if (create_desktop_shortcuts)
-	{
-		locations.insert(gui::utils::shortcut_location::desktop);
-	}
 
-	if (create_app_shortcut)
-	{
-		locations.insert(gui::utils::shortcut_location::applications);
-	}
+	std::vector<game_info> game_data_shortcuts;
 
-	if (!locations.empty())
+	for (const auto& [boot_path, title_id] : paths)
 	{
-		std::vector<game_info> game_data_shortcuts;
-
-		for (const auto& [boot_path, title_id] : paths)
+		for (const game_info& gameinfo : m_game_list_frame->GetGameInfo())
 		{
-			for (const game_info& gameinfo : m_game_list_frame->GetGameInfo())
+			if (gameinfo && gameinfo->info.serial == title_id.toStdString())
 			{
-				if (gameinfo && gameinfo->info.serial == title_id.toStdString())
+				if (Emu.IsPathInsideDir(boot_path, gameinfo->info.path))
 				{
-					if (Emu.IsPathInsideDir(boot_path, gameinfo->info.path))
-					{
-						if (!locations.empty())
-						{
-							game_data_shortcuts.push_back(gameinfo);
-						}
-					}
-
-					break;
+					game_data_shortcuts.push_back(gameinfo);
 				}
+
+				break;
 			}
 		}
+	}
 
-		if (!game_data_shortcuts.empty() && !locations.empty())
-		{
-			m_game_list_frame->actions()->CreateShortcuts(game_data_shortcuts, locations);
-		}
+	if (!game_data_shortcuts.empty())
+	{
+		m_game_list_frame->actions()->CreateShortcuts(game_data_shortcuts, locations);
 	}
 }
 

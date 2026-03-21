@@ -92,7 +92,7 @@ void game_list_grid::populate(
 
 			if (const QPixmap pixmap = item->get_movie_image(frame); item->get_active() && !pixmap.isNull())
 			{
-				item->set_icon(gui::utils::get_centered_pixmap(pixmap, m_icon_size, 0, 0, 1.0, Qt::FastTransformation));
+				item->set_icon(gui::utils::get_aligned_pixmap(pixmap, m_icon_size, 1.0, Qt::FastTransformation, gui::utils::align_h::center, gui::utils::align_v::center));
 				return;
 			}
 
@@ -109,11 +109,23 @@ void game_list_grid::populate(
 			}
 		});
 
-		if (play_hover_movies && (game->has_hover_gif || game->has_hover_pam))
+		if (play_hover_movies && (game->has_hover_gif || game->has_hover_pam || game->has_audio_file))
 		{
-			item->set_video_path(game->info.movie_path);
+			bool check_iso = false;
 
-			if (!fs::exists(game->info.movie_path) && is_file_iso(game->info.path))
+			if (game->has_hover_gif || game->has_hover_pam)
+			{
+				item->set_video_path(game->info.movie_path);
+				check_iso |= !fs::exists(game->info.movie_path);
+			}
+
+			if (game->has_audio_file)
+			{
+				item->set_audio_path(game->info.audio_path);
+				check_iso |= !fs::exists(game->info.audio_path);
+			}
+
+			if (check_iso && is_file_iso(game->info.path))
 			{
 				item->set_iso_path(game->info.path);
 			}

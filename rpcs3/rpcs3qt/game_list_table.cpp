@@ -299,11 +299,23 @@ void game_list_table::populate(
 			}
 		});
 
-		if (play_hover_movies && (game->has_hover_gif || game->has_hover_pam))
+		if (play_hover_movies && (game->has_hover_gif || game->has_hover_pam || game->has_audio_file))
 		{
-			icon_item->set_video_path(game->info.movie_path);
+			bool check_iso = false;
 
-			if (!fs::exists(game->info.movie_path) && is_file_iso(game->info.path))
+			if (game->has_hover_gif || game->has_hover_pam)
+			{
+				icon_item->set_video_path(game->info.movie_path);
+				check_iso |= !fs::exists(game->info.movie_path);
+			}
+
+			if (game->has_audio_file)
+			{
+				icon_item->set_audio_path(game->info.audio_path);
+				check_iso |= !fs::exists(game->info.audio_path);
+			}
+
+			if (check_iso && is_file_iso(game->info.path))
 			{
 				icon_item->set_iso_path(game->info.path);
 			}
@@ -400,10 +412,21 @@ void game_list_table::populate(
 		row++;
 	}
 
+	bool first_index = true;
+
 	for (int selected_row : selected_rows)
 	{
-		selectionModel()->select(model()->index(selected_row, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+		const QModelIndex index = model()->index(selected_row, 0);
+
+		selectionModel()->select(index, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+
+		if (first_index)
+		{
+			selectionModel()->setCurrentIndex(index, QItemSelectionModel::NoUpdate);
+			first_index = false;
+		}
 	}
+	Q_EMIT itemSelectionChanged();
 }
 
 void game_list_table::repaint_icons(std::vector<game_info>& game_data, const QColor& icon_color, const QSize& icon_size, qreal device_pixel_ratio)
