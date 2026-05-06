@@ -11,6 +11,7 @@ add_library(rpcs3_ui STATIC
     clans_settings_dialog.cpp
     config_adapter.cpp
     config_checker.cpp
+    config_database.cpp
     curl_handle.cpp
     custom_dialog.cpp
     custom_table_widget_item.cpp
@@ -21,6 +22,7 @@ add_library(rpcs3_ui STATIC
     dimensions_dialog.cpp
     _discord_utils.cpp
     emu_settings.cpp
+    emu_settings_type.cpp
     elf_memory_dumping_dialog.cpp
     emulated_pad_settings_dialog.cpp
     emulated_logitech_g27_settings_dialog.cpp
@@ -48,6 +50,7 @@ add_library(rpcs3_ui STATIC
     input_dialog.cpp
     instruction_editor_dialog.cpp
     ipc_settings_dialog.cpp
+    iso_integrity.cpp
     kamen_rider_dialog.cpp
     kernel_explorer.cpp
     localized.cpp
@@ -83,6 +86,7 @@ add_library(rpcs3_ui STATIC
     qt_video_source.cpp
     raw_mouse_settings_dialog.cpp
     register_editor_dialog.cpp
+    recording_settings_dialog.cpp
     recvmessage_dialog_frame.cpp
     render_creator.cpp
     rpcn_settings_dialog.cpp
@@ -135,6 +139,7 @@ add_library(rpcs3_ui STATIC
     patch_creator_dialog.ui
     patch_manager_dialog.ui
     ps_move_tracker_dialog.ui
+    recording_settings_dialog.ui
     settings_dialog.ui
     shortcut_dialog.ui
     welcome_dialog.ui

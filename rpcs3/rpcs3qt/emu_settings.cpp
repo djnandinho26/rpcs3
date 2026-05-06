@@ -117,7 +117,7 @@ bool emu_settings::Init()
 	return true;
 }
 
-void emu_settings::LoadSettings(const std::string& title_id, bool create_config_from_global)
+void emu_settings::LoadSettings(const std::string& title_id, bool create_config_from_global, const std::string& db_config)
 {
 	m_title_id = title_id;
 
@@ -157,6 +157,22 @@ void emu_settings::LoadSettings(const std::string& title_id, bool create_config_
 			cfg_log.fatal("Failed to load global config %s:\n%s (%s)", global_config_path, global_error, fs::g_tls_error);
 			QMessageBox::critical(nullptr, tr("Config Error"), tr("Failed to load global config:\nFile: %0\nError: %1")
 				.arg(QString::fromStdString(global_config_path)).arg(QString::fromStdString(global_error)), QMessageBox::Ok);
+		}
+	}
+	else if (!db_config.empty())
+	{
+		// Add database config
+		auto [config, error] = yaml_load(db_config);
+
+		if (config && error.empty())
+		{
+			m_current_settings += config;
+		}
+		else
+		{
+			cfg_log.fatal("Failed to load database config for '%s':\n%s", title_id, error);
+			QMessageBox::critical(nullptr, tr("Config Error"), tr("Failed to load database config:\nError: %1")
+				.arg(QString::fromStdString(error)), QMessageBox::Ok);
 		}
 	}
 
@@ -207,7 +223,7 @@ bool emu_settings::ValidateSettings(bool cleanup)
 	bool is_clean = true;
 
 	std::function<void(int, YAML::Node&, std::vector<std::string>&, cfg::_base*)> search_level;
-	search_level = [&search_level, &is_clean, &cleanup, this](int level, YAML::Node& yml_node, std::vector<std::string>& keys, cfg::_base* cfg_base)
+	search_level = [&search_level, &is_clean, &cleanup](int level, YAML::Node& yml_node, std::vector<std::string>& keys, cfg::_base* cfg_base)
 	{
 		if (!yml_node || !yml_node.IsMap())
 		{
@@ -1097,6 +1113,14 @@ QString emu_settings::GetLocalizedSetting(const QString& original, emu_settings_
 		case msaa_level::_auto: return tr("Auto", "MSAA");
 		}
 		break;
+	case emu_settings_type::FramebufferAliasingBias:
+		switch (static_cast<framebuffer_aliasing_bias>(index))
+		{
+		case framebuffer_aliasing_bias::_auto: return tr("Auto", "Framebuffer Aliasing Heuristic Bias");
+		case framebuffer_aliasing_bias::prefer_color: return tr("Prefer Color", "Framebuffer Aliasing Heuristic Bias");
+		case framebuffer_aliasing_bias::prefer_depth: return tr("Prefer Depth", "Framebuffer Aliasing Heuristic Bias");
+		}
+		break;
 	case emu_settings_type::ShaderPrecisionQuality:
 		switch (static_cast<gpu_preset_level>(index))
 		{
@@ -1515,7 +1539,7 @@ QString emu_settings::GetLocalizedSetting(const QString& original, emu_settings_
 		std::string type_string;
 		if (const auto it = settings_location.find(type); it != settings_location.cend())
 		{
-			for (const char* loc : it->second)
+			for (const std::string& loc : it->second)
 			{
 				if (!type_string.empty()) type_string += ": ";
 				type_string += loc;
