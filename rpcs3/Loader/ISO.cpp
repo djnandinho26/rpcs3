@@ -54,7 +54,7 @@ static void* get_aligned_buf()
 	return s_aligned_buf.buf;
 }
 
-static bool is_iso_file(const fs::file& file, u64* size = nullptr)
+static bool is_iso_file(iso_file& file, u64* size = nullptr)
 {
 	if (!file || file.size() < 32768ULL + 6)
 	{
@@ -87,7 +87,7 @@ bool is_iso_file(const std::string& path, u64* size, bool* is_raw_device)
 	// "new_path" is updated with the raw device path in case "path" points to a BD drive
 	const bool raw_device = fs::get_optical_raw_device(path, &new_path);
 
-	if (!raw_device && fs::is_dir(path))
+	if (!raw_device && !fs::is_file(path))
 	{
 		return false;
 	}
@@ -97,7 +97,7 @@ bool is_iso_file(const std::string& path, u64* size, bool* is_raw_device)
 		*is_raw_device = raw_device;
 	}
 
-	fs::file file(std::make_unique<iso_file>(new_path, fs::read));
+	iso_file file(new_path);
 
 	return is_iso_file(file, size);
 }
@@ -337,7 +337,7 @@ iso_type_status iso_file_decryption::retrieve_key(iso_archive& archive, std::str
 	return iso_type_status::ERROR_OPENING_KEY;
 }
 
-iso_type_status iso_file_decryption::check_type(const std::string& path, std::string& key_path, aes_context* aes_ctx)
+iso_type_status iso_file_decryption::check_type(const std::string& path, std::string* key_path, aes_context* aes_ctx)
 {
 	if (!is_iso_file(path))
 	{
@@ -363,8 +363,12 @@ iso_type_status iso_file_decryption::check_type(const std::string& path, std::st
 	{
 		if (fs::is_file(path))
 		{
-			key_path = path;
-			return get_key(key_path, aes_ctx);
+			if (key_path)
+			{
+				*key_path = path;
+			}
+
+			return get_key(path, aes_ctx);
 		}
 	}
 
@@ -381,7 +385,7 @@ bool iso_file_decryption::init(const std::string& path, iso_archive* archive)
 	// Store the ISO region information (needed by both the "Redump" type (only on "decrypt()" method) and "3k3y" type)
 	//
 
-	fs::file iso_file(std::make_unique<iso_file>(path, fs::read));
+	iso_file iso_file(path);
 
 	if (!is_iso_file(iso_file))
 	{
@@ -390,7 +394,7 @@ bool iso_file_decryption::init(const std::string& path, iso_archive* archive)
 	}
 
 	// Reset the file position after it was changed by is_iso_file()
-	iso_file.seek(0);
+	iso_file.seek(0, fs::seek_set);
 
 	std::array<u8, ISO_SECTOR_SIZE * 2> sec0_sec1;
 
@@ -447,7 +451,7 @@ bool iso_file_decryption::init(const std::string& path, iso_archive* archive)
 	else
 	{
 		// Try to detect the Redump type. If so, the decryption context is set into "m_aes_dec"
-		status = check_type(path, key_path, &m_aes_dec);
+		status = check_type(path, &key_path, &m_aes_dec);
 	}
 
 	switch (status)
@@ -619,13 +623,14 @@ u64 iso_file_encrypted::read_at(u64 offset, void* buffer, u64 size)
 	//                                                '           '                                   '           '
 	//                                                | first sec |           inner sec(s)            | last sec  |
 
-	const u64 max_size = std::min(size, local_extent_remaining(offset));
+	u64 max_size = std::min(size, local_extent_remaining(offset));
 
 	if (max_size == 0)
 	{
 		return 0;
 	}
 
+	const u64 total_size = this->size();
 	const u64 archive_first_offset = file_offset(offset);
 	const u64 archive_last_offset = archive_first_offset + max_size - 1;
 	iso_sector first_sec, last_sec;
@@ -674,8 +679,17 @@ u64 iso_file_encrypted::read_at(u64 offset, void* buffer, u64 size)
 	{
 		if (total_read != first_sec.size_aligned)
 		{
-			iso_log.error("read_at: %s: Error reading from file (%llu/%llu)", m_meta.name, total_read, first_sec.size_aligned);
+			iso_log.error("read_at: %s: Error reading from file - O: %llu (%llu), S: %llu/%llu/%llu (%llu), TR: %llu", m_meta.name,
+				offset, first_sec.address_aligned, first_sec.size_aligned, max_size, size, total_size, total_read);
+
 			return 0;
+		}
+
+		// If present, read the remaining chunk of data on next extent
+		if (size > max_size && (offset + max_size) < total_size)
+		{
+			iso_log.warning("read_at: %s: Extent limit reached reading from file (%llu/%llu)", m_meta.name, max_size, size);
+			max_size += read_at(offset + max_size, &reinterpret_cast<u8*>(buffer)[max_size], size - max_size);
 		}
 
 		return max_size;
@@ -735,10 +749,18 @@ u64 iso_file_encrypted::read_at(u64 offset, void* buffer, u64 size)
 
 	if (total_read != first_sec.size_aligned + last_sec.size_aligned + (sector_count - 2) * ISO_SECTOR_SIZE)
 	{
-		iso_log.error("read_at: %s: Error reading from file (%llu/%llu)", m_meta.name,
+		iso_log.error("read_at: %s: Error reading from file - O: %llu (%llu), S: %llu/%llu/%llu (%llu), TR: %llu/%llu", m_meta.name,
+			offset, first_sec.address_aligned, last_sec.size_aligned, max_size, size, total_size,
 			total_read, ISO_SECTOR_SIZE + ISO_SECTOR_SIZE + (sector_count - 2) * ISO_SECTOR_SIZE);
 
 		return 0;
+	}
+
+	// If present, read the remaining chunk of data on next extent
+	if (size > max_size && (offset + max_size) < total_size)
+	{
+		iso_log.warning("read_at: %s: Extent limit reached reading from file (%llu/%llu)", m_meta.name, max_size, size);
+		max_size += read_at(offset + max_size, &reinterpret_cast<u8*>(buffer)[max_size], size - max_size);
 	}
 
 	return max_size;
@@ -968,17 +990,14 @@ iso_archive::iso_archive(const std::string& path)
 	// "m_path" is updated with the raw device path in case "path" points to a BD drive
 	fs::get_optical_raw_device(path, &m_path);
 
-	fs::file iso_file(std::make_unique<iso_file>(m_path, fs::read));
-
-	if (!iso_file || !is_iso_file(iso_file))
+	if (!is_iso_file(m_path))
 	{
 		// Not ISO... TODO: throw something?
 		iso_log.error("iso_archive: Failed to recognize ISO file: '%s'", path);
 		return;
 	}
 
-	// Reset the file position after it was changed by is_iso_file()
-	iso_file.seek(0);
+	fs::file iso_file(std::make_unique<iso_file>(m_path));
 
 	u8 descriptor_type = -2;
 	bool use_ucs2_decoding = false;
@@ -1249,13 +1268,14 @@ u64 iso_file::read(void* buffer, u64 size)
 
 u64 iso_file::read_at(u64 offset, void* buffer, u64 size)
 {
-	const u64 max_size = std::min(size, local_extent_remaining(offset));
+	u64 max_size = std::min(size, local_extent_remaining(offset));
 
 	if (max_size == 0)
 	{
 		return 0;
 	}
 
+	const u64 total_size = this->size();
 	const u64 archive_first_offset = file_offset(offset);
 
 	// If it's not a raw device
@@ -1265,8 +1285,17 @@ u64 iso_file::read_at(u64 offset, void* buffer, u64 size)
 
 		if (total_read != max_size)
 		{
-			iso_log.error("read_at: %s: Error reading from file (%llu/%llu)", m_meta.name, total_read, max_size);
+			iso_log.error("read_at: %s: Error reading from file - O: %llu (%llu), S: %llu/%llu (%llu), TR: %llu", m_meta.name,
+				offset, archive_first_offset, max_size, size, total_size, total_read);
+
 			return 0;
+		}
+
+		// If present, read the remaining chunk of data on next extent
+		if (size > max_size && (offset + max_size) < total_size)
+		{
+			iso_log.warning("read_at: %s: Extent limit reached reading from file (%llu/%llu)", m_meta.name, max_size, size);
+			max_size += read_at(offset + max_size, &reinterpret_cast<u8*>(buffer)[max_size], size - max_size);
 		}
 
 		return max_size;
@@ -1319,8 +1348,17 @@ u64 iso_file::read_at(u64 offset, void* buffer, u64 size)
 	{
 		if (total_read != ISO_SECTOR_SIZE)
 		{
-			iso_log.error("read_at: %s: Error reading from file (%llu/%llu)", m_meta.name, total_read, ISO_SECTOR_SIZE);
+			iso_log.error("read_at: %s: Error reading from file - O: %llu (%llu), S: %llu/%llu/%llu (%llu), TR: %llu", m_meta.name,
+				offset, first_sec.lba_address, ISO_SECTOR_SIZE, max_size, size, total_size, total_read);
+
 			return 0;
+		}
+
+		// If present, read the remaining chunk of data on next extent
+		if (size > max_size && (offset + max_size) < total_size)
+		{
+			iso_log.warning("read_at: %s: Extent limit reached reading from file (%llu/%llu)", m_meta.name, max_size, size);
+			max_size += read_at(offset + max_size, &reinterpret_cast<u8*>(buffer)[max_size], size - max_size);
 		}
 
 		return max_size;
@@ -1356,10 +1394,18 @@ u64 iso_file::read_at(u64 offset, void* buffer, u64 size)
 
 	if (total_read != ISO_SECTOR_SIZE + ISO_SECTOR_SIZE + (sector_count - 2) * ISO_SECTOR_SIZE)
 	{
-		iso_log.error("read_at: %s: Error reading from file (%llu/%llu)", m_meta.name,
-			total_read, ISO_SECTOR_SIZE + ISO_SECTOR_SIZE + (sector_count - 2) * ISO_SECTOR_SIZE);
+		iso_log.error("read_at: %s: Error reading from file - O: %llu (%llu), S: %llu/%llu/%llu (%llu), TR: %llu/%llu", m_meta.name,
+			offset, first_sec.lba_address, ISO_SECTOR_SIZE, max_size, size, total_size,
+			total_read,	ISO_SECTOR_SIZE + ISO_SECTOR_SIZE + (sector_count - 2) * ISO_SECTOR_SIZE);
 
 		return 0;
+	}
+
+	// If present, read the remaining chunk of data on next extent
+	if (size > max_size && (offset + max_size) < total_size)
+	{
+		iso_log.warning("read_at: %s: Extent limit reached reading from file (%llu/%llu)", m_meta.name, max_size, size);
+		max_size += read_at(offset + max_size, &reinterpret_cast<u8*>(buffer)[max_size], size - max_size);
 	}
 
 	return max_size;
