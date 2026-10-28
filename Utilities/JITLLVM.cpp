@@ -14,6 +14,8 @@
 
 #if defined(__APPLE__)
 #include <pthread.h>
+#elif defined(ANDROID)
+#include "util/cctype.hpp"
 #endif
 
 LOG_CHANNEL(jit_log, "JIT");
@@ -241,7 +243,7 @@ struct MemoryManager1 : llvm::RTDyldMemoryManager
 	MemoryManager1(std::function<u64(const std::string&)> symbols_cement = {}) noexcept
 		: m_symbols_cement(std::move(symbols_cement))
 	{
-		auto ptr = reinterpret_cast<u8*>(utils::memory_reserve(c_max_size * 3));
+		auto ptr = reinterpret_cast<u8*>(utils::memory_reserve(c_max_size * 3, true));
 		m_code_mems = ptr;
 		// ptr += c_max_size;
 		// m_data_ro_mems = ptr;
@@ -260,7 +262,7 @@ struct MemoryManager1 : llvm::RTDyldMemoryManager
 		// utils::memory_decommit(m_code_mems, how_much(code_ptr));
 		// utils::memory_decommit(m_data_ro_mems, how_much(data_ro_ptr));
 		// utils::memory_decommit(m_data_rw_mems, how_much(data_rw_ptr));
-		utils::memory_decommit(m_code_mems, c_max_size * 3);
+		utils::memory_decommit(m_code_mems, c_max_size * 3, true);
 	}
 
 	llvm::JITSymbol findSymbol(const std::string& name) override
@@ -503,21 +505,36 @@ public:
 		{
 			const std::vector<u8> cached_data = cached.to_vector<u8>();
 
-			if (cached_data.empty()) [[unlikely]]
+			if (cached_data.size() < 18) [[unlikely]] // gzip header + trailer
 			{
 				return nullptr;
 			}
 
-			const std::vector<u8> out = unzip(cached_data);
+			std::unique_ptr<llvm::WritableMemoryBuffer> buf;
 
-			if (out.empty())
+			// Get out size from trailer
+			const u32 out_size = read_from_ptr<u32>(cached_data, cached_data.size() - 4);
+			if (out_size != 0 && out_size <= cached_data.size() * 1032) // Check for impossible sizes
 			{
-				jit_log.error("LLVM: Failed to unzip module: '%s'", path);
-				return nullptr;
+				buf = llvm::WritableMemoryBuffer::getNewUninitMemBuffer(out_size);
 			}
 
-			auto buf = llvm::WritableMemoryBuffer::getNewUninitMemBuffer(out.size());
-			std::memcpy(buf->getBufferStart(), out.data(), out.size());
+			if (!buf || !unzip(cached_data.data(), cached_data.size(), reinterpret_cast<u8*>(buf->getBufferStart()), out_size))
+			{
+				jit_log.error("LLVM: Failed to unzip module directly into the buffer: '%s'", path);
+
+				// Try again with old unzip method
+				const std::vector<u8> out = unzip(cached_data);
+				if (out.empty())
+				{
+					jit_log.error("LLVM: Failed to unzip module: '%s'", path);
+					return nullptr;
+				}
+
+				buf = llvm::WritableMemoryBuffer::getNewUninitMemBuffer(out.size());
+				std::memcpy(buf->getBufferStart(), out.data(), out.size());
+			}
+
 			return buf;
 		}
 
@@ -551,9 +568,9 @@ public:
 	}
 };
 
-std::string jit_compiler::cpu(const std::string& _cpu)
+std::string jit_compiler::cpu(std::string_view _cpu)
 {
-	std::string m_cpu = _cpu;
+	std::string m_cpu = std::string(_cpu);
 
 	if (m_cpu.empty())
 	{
@@ -681,7 +698,7 @@ bool jit_compiler::add_sub_disk_space(ssz space)
 	}).second;
 }
 
-jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, const std::string& _cpu, u32 flags, std::function<u64(const std::string&)> symbols_cement) noexcept
+jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, std::string_view _cpu, u32 flags, std::function<u64(const std::string&)> symbols_cement) noexcept
 	: m_context(new llvm::LLVMContext)
 	, m_cpu(cpu(_cpu))
 {
@@ -707,11 +724,7 @@ jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, co
 	std::string result;
 
 	auto null_mod = std::make_unique<llvm::Module> ("null_", *m_context);
-#if LLVM_VERSION_MAJOR >= 21 && (LLVM_VERSION_MINOR >= 1 || LLVM_VERSION_MAJOR >= 22)
 	null_mod->setTargetTriple(llvm::Triple(jit_compiler::triple1()));
-#else
-	null_mod->setTargetTriple(jit_compiler::triple1());
-#endif
 
 	std::unique_ptr<llvm::RTDyldMemoryManager> mem;
 
@@ -725,11 +738,7 @@ jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, co
 		else
 		{
 			mem = std::make_unique<MemoryManager2>(std::move(symbols_cement));
-#if LLVM_VERSION_MAJOR >= 21 && (LLVM_VERSION_MINOR >= 1 || LLVM_VERSION_MAJOR >= 22)
 			null_mod->setTargetTriple(llvm::Triple(jit_compiler::triple2()));
-#else
-			null_mod->setTargetTriple(jit_compiler::triple2());
-#endif
 		}
 	}
 	else
@@ -749,6 +758,15 @@ jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, co
 		attributes.push_back("+dotprod");
 	else
 		attributes.push_back("-dotprod");
+
+	// The recompilers emit i8mm intrinsics (e.g. ummla) gated on utils::has_i8mm().
+	// The JIT target features must advertise i8mm too, otherwise the backend fails
+	// with "Cannot select: intrinsic %llvm.aarch64.neon.ummla" whenever the resolved
+	// -mcpu does not already imply it (e.g. the cortex-a78 fallback on Apple silicon).
+	if (utils::has_i8mm())
+		attributes.push_back("+i8mm");
+	else
+		attributes.push_back("-i8mm");
 
 	if (utils::has_sve())
 		attributes.push_back("+sve");
@@ -909,35 +927,54 @@ bool jit_compiler::add(const std::string& path)
 		return false;
 	}
 
-	if (auto object_file = llvm::object::ObjectFile::createObjectFile(*cache))
+	return add(std::move(cache), path);
+}
+
+bool jit_compiler::add(std::unique_ptr<llvm::MemoryBuffer> object, const std::string& path)
+{
+	if (!object)
 	{
-		m_engine->addObjectFile(llvm::object::OwningBinary<llvm::object::ObjectFile>(std::move(*object_file), std::move(cache)));
+		jit_log.error("ObjectCache: Failed to add nullptr object for file. (path='%s')", path);
+		return false;
+	}
+
+	if (auto object_file = llvm::object::ObjectFile::createObjectFile(*object))
+	{
+		m_engine->addObjectFile(llvm::object::OwningBinary<llvm::object::ObjectFile>(std::move(*object_file), std::move(object)));
 		jit_log.trace("ObjectCache: Successfully added %s", path);
 		return true;
 	}
 	else
 	{
-		jit_log.error("ObjectCache: Adding failed: %s", path);
+		jit_log.error("ObjectCache: Adding failed: %s (%s)", path, llvm::toString(object_file.takeError()));
 		return false;
 	}
 }
 
-bool jit_compiler::check(const std::string& path)
+std::unique_ptr<llvm::MemoryBuffer> jit_compiler::load_object(const std::string& path)
 {
 	if (auto cache = ObjectCache::load(path))
 	{
 		if (auto object_file = llvm::object::ObjectFile::createObjectFile(*cache))
 		{
-			return true;
+			return cache;
+		}
+		else
+		{
+			llvm::consumeError(object_file.takeError());
 		}
 
-		if (fs::remove_file(path))
+		// Remove cached and uncached file
+		const bool removed_gz = fs::remove_file(path + ".gz");
+		const bool removed = fs::remove_file(path);
+
+		if (removed_gz || removed)
 		{
 			jit_log.error("ObjectCache: Removed damaged file: %s", path);
 		}
 	}
 
-	return false;
+	return nullptr;
 }
 
 void jit_compiler::update_global_mapping(const std::string& name, u64 addr)
@@ -1038,7 +1075,7 @@ const char * fallback_cpu_detection()
 			return "cortex-a78";
 		}
 
-		std::transform(result.begin(), result.end(), result.begin(), ::tolower);
+		std::transform(result.begin(), result.end(), result.begin(), utils::tolower<char>);
 		return result;
 	}();
 

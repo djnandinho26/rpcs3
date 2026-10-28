@@ -15,11 +15,14 @@ welcome_dialog::welcome_dialog(std::shared_ptr<gui_settings> gui_settings, bool 
 	: QDialog(parent)
 	, ui(new Ui::welcome_dialog)
 	, m_gui_settings(std::move(gui_settings))
+	, m_initial_stylesheet(m_gui_settings->GetValue(gui::m_currentStylesheet).toString())
 {
 	ui->setupUi(this);
 
 	setAttribute(Qt::WA_DeleteOnClose);
 	setWindowFlag(Qt::WindowCloseButtonHint, false); // disable the close button shown on the dialog's top right corner
+	setModal(true);
+
 	layout()->setSizeConstraint(QLayout::SetFixedSize);
 
 	ui->icon_label->load(QStringLiteral(":/rpcs3.svg"));
@@ -53,7 +56,6 @@ welcome_dialog::welcome_dialog(std::shared_ptr<gui_settings> gui_settings, bool 
 
 	ui->use_dark_theme->setVisible(!is_manual_show);
 	ui->use_dark_theme->setEnabled(!is_manual_show);
-	ui->use_dark_theme->setChecked(gui::utils::dark_mode_active());
 #endif
 
 	ui->accept->setEnabled(is_manual_show);
@@ -90,18 +92,31 @@ welcome_dialog::welcome_dialog(std::shared_ptr<gui_settings> gui_settings, bool 
 		{
 			gui::utils::create_shortcut("RPCS3", "", "", "", "RPCS3", ":/rpcs3.svg", fs::get_temp_dir(), "", gui::utils::shortcut_location::applications);
 		}
-
-		if (ui->use_dark_theme->isChecked() && ui->use_dark_theme->isEnabled()) // if checked and also on initial welcome dialog
-		{
-			m_gui_settings->SetValue(gui::m_currentStylesheet, gui::DarkStylesheet);
-		}
 	});
 
 	connect(this, &QDialog::rejected, this, [this]() // "reject" signal's event handler
 	{
 		// if the agreement on RPCS3's usage conditions was not accepted by the user, always display the initial welcome dialog at next startup
 		m_gui_settings->SetValue(gui::ib_show_welcome, QVariant(true));
+
+		// Reset stylesheet (no need to request a stylesheet change since this dialog can only be rejected in the boot process, which causes rpcs3 to quit)
+		m_gui_settings->SetValue(gui::m_currentStylesheet, m_initial_stylesheet);
 	});
+}
+
+void welcome_dialog::init_stylesheet()
+{
+	if (ui->use_dark_theme->isEnabled())
+	{
+		connect(ui->use_dark_theme, &QCheckBox::checkStateChanged, this, [this](Qt::CheckState state)
+		{
+			// Update stylesheet
+			m_gui_settings->SetValue(gui::m_currentStylesheet, state == Qt::CheckState::Checked ? gui::DarkStylesheet : gui::DefaultStylesheet);
+			Q_EMIT request_stylesheet_change();
+		});
+
+		ui->use_dark_theme->setChecked(gui::utils::dark_mode_active() || m_initial_stylesheet == gui::DarkStylesheet);
+	}
 }
 
 welcome_dialog::~welcome_dialog()

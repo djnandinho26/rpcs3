@@ -9,22 +9,35 @@ LOG_CHANNEL(sys_net);
 lv2_socket_p2p::lv2_socket_p2p(lv2_socket_family family, lv2_socket_type type, lv2_ip_protocol protocol)
 	: lv2_socket(family, type, protocol)
 {
-	sockopt_cache cache_type;
-	cache_type.data._int = SYS_NET_SOCK_DGRAM_P2P;
-	cache_type.len = 4;
+	initialize_socket_options(type);
+}
 
-	sockopts[(static_cast<u64>(SYS_NET_SOL_SOCKET) << 32ull) | SYS_NET_SO_TYPE] = cache_type;
+void lv2_socket_p2p::initialize_socket_options(lv2_socket_type type)
+{
+	so_type = type;
+	so_rcvbuf = type == SYS_NET_SOCK_DGRAM_P2P ? 124800 : 65535; // Hardware verified
 }
 
 lv2_socket_p2p::lv2_socket_p2p(utils::serial& ar, lv2_socket_type type)
 	: lv2_socket(stx::make_exact(ar), type)
 {
+	initialize_socket_options(type);
 	ar(port, vport, bound_addr);
 
 	auto data_dequeue = ar.pop<std::deque<std::pair<sys_net_sockaddr_in_p2p, std::vector<u8>>>>();
+	constexpr usz max_buffer_size = MAX_RCVBUF_SIZE;
 
 	for (; !data_dequeue.empty(); data_dequeue.pop_front())
 	{
+		const usz packet_cost = get_packet_cost(data_dequeue.front().second.size());
+
+		// Socket options are not serialized, so only apply the maximum receive buffer size while restoring queued data.
+		if (data_size >= max_buffer_size || packet_cost > max_buffer_size - data_size)
+		{
+			continue;
+		}
+
+		data_size += packet_cost;
 		data.push(std::move(data_dequeue.front()));
 	}
 }
@@ -48,7 +61,18 @@ void lv2_socket_p2p::handle_new_data(sys_net_sockaddr_in_p2p p2p_addr, std::vect
 {
 	std::lock_guard lock(mutex);
 
+	const usz packet_cost = get_packet_cost(p2p_data.size());
+	const usz receive_buffer_size = static_cast<usz>(so_rcvbuf);
+
+	// The receive buffer size can be lowered below data_size by setsockopt
+	if (data_size >= receive_buffer_size || packet_cost > receive_buffer_size - data_size)
+	{
+		sys_net.trace("Received P2P packet for vport %d but the receive queue is full", p2p_addr.sin_vport);
+		return;
+	}
+
 	sys_net.trace("Received a P2P packet for vport %d and saved it", p2p_addr.sin_vport);
+	data_size += packet_cost;
 	data.push(std::make_pair(std::move(p2p_addr), std::move(p2p_data)));
 
 	// Check if poll is happening
@@ -92,8 +116,7 @@ s32 lv2_socket_p2p::connect_followup()
 
 std::pair<s32, sys_net_sockaddr> lv2_socket_p2p::getpeername()
 {
-	sys_net.fatal("[P2P] getpeername() called on a P2P socket");
-	return {};
+	return {-SYS_NET_ENOTCONN, {}};
 }
 
 s32 lv2_socket_p2p::listen([[maybe_unused]] s32 backlog)
@@ -198,6 +221,26 @@ std::tuple<s32, lv2_socket::sockopt_data, u32> lv2_socket_p2p::getsockopt(s32 le
 {
 	std::lock_guard lock(mutex);
 
+	const auto create_return_value = [](s32 value) -> std::tuple<s32, lv2_socket::sockopt_data, u32>
+	{
+		sockopt_data out_val;
+		out_val._int = value;
+		return {CELL_OK, out_val, sizeof(s32)};
+	};
+
+	if (level == SYS_NET_SOL_SOCKET)
+	{
+		switch (optname)
+		{
+		case SYS_NET_SO_TYPE: return create_return_value(so_type);
+		case SYS_NET_SO_RCVBUF: return create_return_value(so_rcvbuf);
+		case SYS_NET_SO_NBIO: return create_return_value(so_nbio);
+		case SYS_NET_SO_BROADCAST: return create_return_value(so_broadcast);
+		case SYS_NET_SO_ERROR: return create_return_value(std::exchange(so_error, 0));
+		default: break;
+		}
+	}
+
 	const u64 key = (static_cast<u64>(level) << 32) | static_cast<u64>(optname);
 
 	if (!sockopts.contains(key))
@@ -216,15 +259,31 @@ s32 lv2_socket_p2p::setsockopt(s32 level, s32 optname, const std::vector<u8>& op
 
 	int native_int = *reinterpret_cast<const be_t<s32>*>(optval.data());
 
-	if (level == SYS_NET_SOL_SOCKET && optname == SYS_NET_SO_NBIO)
+	if (level == SYS_NET_SOL_SOCKET)
 	{
-		so_nbio = native_int;
+		switch (optname)
+		{
+		case SYS_NET_SO_TYPE: return -SYS_NET_ENOPROTOOPT;
+		case SYS_NET_SO_RCVBUF:
+		{
+			if (s32 ret = lv2_socket::validate_so_rcvbuf(native_int); ret != CELL_OK)
+			{
+				return ret;
+			}
+
+			so_rcvbuf = native_int;
+			return CELL_OK;
+		}
+		case SYS_NET_SO_NBIO: so_nbio = native_int; return CELL_OK;
+		case SYS_NET_SO_BROADCAST: so_broadcast = native_int; return CELL_OK;
+		default: break;
+		}
 	}
 
 	const u64 key = (static_cast<u64>(level) << 32) | static_cast<u64>(optname);
 	sockopt_cache cache{};
-	memcpy(&cache.data._int, optval.data(), optval.size());
-	cache.len = ::size32(optval);
+	cache.len = std::min(::size32(optval), static_cast<u32>(sizeof(cache.data.ch)));
+	memcpy(&cache.data.ch, optval.data(), cache.len);
 
 	sockopts[key] = std::move(cache);
 
@@ -259,6 +318,7 @@ std::optional<std::tuple<s32, std::vector<u8>, sys_net_sockaddr>> lv2_socket_p2p
 	sys_net_sockaddr sn_addr;
 	memcpy(&sn_addr, &p2p_data.first, sizeof(sn_addr));
 
+	data_size -= get_packet_cost(p2p_data.second.size());
 	data.pop();
 
 	return {{native_result, res_buf, sn_addr}};
@@ -284,6 +344,12 @@ std::optional<s32> lv2_socket_p2p::sendto(s32 flags, const std::vector<u8>& buf,
 	char ip_str[16];
 	inet_ntop(AF_INET, &native_addr.sin_addr, ip_str, sizeof(ip_str));
 	sys_net.trace("[P2P] Sending a packet to %s:%d:%d", ip_str, p2p_port, p2p_vport);
+
+	if (native_addr.sin_addr.s_addr == 0xFFFFFFFF && !so_broadcast)
+	{
+		sys_net.error("[P2P] Tried to send to broadcast address without SO_BROADCAST");
+		return {-SYS_NET_EACCES};
+	}
 
 	std::vector<u8> p2p_data(buf.size() + VPORT_P2P_HEADER_SIZE);
 	const le_t<u16> p2p_vport_le = p2p_vport;
@@ -364,20 +430,39 @@ s32 lv2_socket_p2p::shutdown([[maybe_unused]] s32 how)
 	return CELL_OK;
 }
 
+void lv2_socket_p2p::get_sockinfo(sys_net_sockinfo_t& info)
+{
+	std::lock_guard lock(mutex);
+	info.state = vport ? SYS_NET_STATE_OPENED : SYS_NET_STATE_CREATED;
+}
+
+bs_t<lv2_socket::poll_t> lv2_socket_p2p::get_pending_events() const
+{
+	bs_t<lv2_socket::poll_t> pending{};
+
+	if (vport && !data.empty())
+	{
+		sys_net.trace("[P2P] p2p_data for vport %d contains %d elements", vport, data.size());
+		pending += lv2_socket::poll_t::read;
+	}
+
+	pending += lv2_socket::poll_t::write;
+
+	return pending;
+}
+
 void lv2_socket_p2p::poll(sys_net_pollfd& sn_pfd, [[maybe_unused]] pollfd& native_pfd)
 {
 	std::lock_guard lock(mutex);
-	ensure(vport);
 
-	// Check if it's a bound P2P socket
-	if ((sn_pfd.events & SYS_NET_POLLIN) && !data.empty())
+	const bs_t<lv2_socket::poll_t> pending = get_pending_events();
+
+	if ((sn_pfd.events & SYS_NET_POLLIN) && (pending & lv2_socket::poll_t::read))
 	{
-		sys_net.trace("[P2P] p2p_data for vport %d contains %d elements", vport, data.size());
 		sn_pfd.revents |= SYS_NET_POLLIN;
 	}
 
-	// Data can always be written on a dgram socket
-	if (sn_pfd.events & SYS_NET_POLLOUT)
+	if ((sn_pfd.events & SYS_NET_POLLOUT) && (pending & lv2_socket::poll_t::write))
 	{
 		sn_pfd.revents |= SYS_NET_POLLOUT;
 	}
@@ -387,20 +472,10 @@ std::tuple<bool, bool, bool> lv2_socket_p2p::select(bs_t<lv2_socket::poll_t> sel
 {
 	std::lock_guard lock(mutex);
 
-	bool read_set  = false;
-	bool write_set = false;
+	const bs_t<lv2_socket::poll_t> pending = get_pending_events() & selected;
 
-	// Check if it's a bound P2P socket
-	if ((selected & lv2_socket::poll_t::read) && vport && !data.empty())
-	{
-		sys_net.trace("[P2P] p2p_data for vport %d contains %d elements", vport, data.size());
-		read_set = true;
-	}
-
-	if (selected & lv2_socket::poll_t::write)
-	{
-		write_set = true;
-	}
+	const bool read_set = !!(pending & lv2_socket::poll_t::read);
+	const bool write_set = !!(pending & lv2_socket::poll_t::write);
 
 	return {read_set, write_set, false};
 }

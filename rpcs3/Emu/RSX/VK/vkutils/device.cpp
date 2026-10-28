@@ -35,6 +35,7 @@ namespace vk
 		VkPhysicalDeviceBorderColorSwizzleFeaturesEXT border_color_swizzle_info{};
 		VkPhysicalDeviceFaultFeaturesEXT device_fault_info{};
 		VkPhysicalDeviceMultiDrawFeaturesEXT multidraw_info{};
+		VkPhysicalDeviceProvokingVertexFeaturesEXT provoking_vertex_info{};
 
 		// Core features
 		shader_support_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
@@ -88,6 +89,13 @@ namespace vk
 			features2.pNext      = &multidraw_info;
 		}
 
+		if (device_extensions.is_supported(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME))
+		{
+			provoking_vertex_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT;
+			provoking_vertex_info.pNext = features2.pNext;
+			features2.pNext             = &provoking_vertex_info;
+		}
+
 		vkGetPhysicalDeviceFeatures2(dev, &features2);
 
 		shader_types_support.allow_float64 = !!features2.features.shaderFloat64;
@@ -104,6 +112,7 @@ namespace vk
 		optional_features_support.barycentric_coords  = !!shader_barycentric_info.fragmentShaderBarycentric;
 		optional_features_support.framebuffer_loops   = !!fbo_loops_info.attachmentFeedbackLoopLayout;
 		optional_features_support.extended_device_fault = !!device_fault_info.deviceFault;
+		optional_features_support.provoking_vertex_last = !!provoking_vertex_info.provokingVertexLast;
 
 		features = features2.features;
 
@@ -271,17 +280,24 @@ namespace vk
 
 	std::string physical_device::get_name() const
 	{
+#ifdef __APPLE__
+		// Both Apple drivers fail to include their names anywhere in the device name string, so we need to append the driver names here.
+		switch (get_driver_vendor())
+		{
+		case driver_vendor::KOSMICKRISP:
+			 return std::string(props.deviceName) + " (KosmicKrisp)";
+		case driver_vendor::MVK:
+			 return std::string(props.deviceName) + " (MoltenVK)";
+		default:
+			 break;
+		}
+#endif
+		// Return the raw device name otherwise.
 		return props.deviceName;
 	}
 
 	driver_vendor physical_device::get_driver_vendor() const
 	{
-#ifdef __APPLE__
-		// moltenVK currently returns DRIVER_ID_MOLTENVK (0).
-		// For now, assume the vendor is moltenVK on Apple devices.
-		return driver_vendor::MVK;
-#endif
-
 		if (!driver_properties.driverID)
 		{
 			const auto gpu_name = get_name();
@@ -332,7 +348,11 @@ namespace vk
 
 			if (gpu_name.find("Apple") != umax)
 			{
+#ifdef __APPLE__
+				return driver_vendor::KOSMICKRISP;
+#else
 				return driver_vendor::HONEYKRISP;
+#endif
 			}
 
 			if (gpu_name.find("Panfrost") != umax)
@@ -342,6 +362,15 @@ namespace vk
 			else if (gpu_name.find("Mali") != umax)
 			{ // e.g. "Mali-G610", hence "else"
 				return driver_vendor::ARM_MALI;
+			}
+
+			if (gpu_name.find("Adreno") != umax)
+			{
+#if defined(_WIN32) || defined(ANDROID)
+				return driver_vendor::QUALCOMM;
+#else
+				return driver_vendor::TURNIP;
+#endif
 			}
 
 			return driver_vendor::unknown;
@@ -371,10 +400,18 @@ namespace vk
 				return driver_vendor::V3DV;
 			case VK_DRIVER_ID_MESA_HONEYKRISP:
 				return driver_vendor::HONEYKRISP;
+			case VK_DRIVER_ID_MESA_KOSMICKRISP:
+				return driver_vendor::KOSMICKRISP;
 			case VK_DRIVER_ID_MESA_PANVK:
 				return driver_vendor::PANVK;
 			case VK_DRIVER_ID_ARM_PROPRIETARY:
 				return driver_vendor::ARM_MALI;
+			case VK_DRIVER_ID_QUALCOMM_PROPRIETARY:
+				return driver_vendor::QUALCOMM;
+			case VK_DRIVER_ID_MESA_TURNIP:
+				return driver_vendor::TURNIP;
+			case VK_DRIVER_ID_MOLTENVK:
+				return driver_vendor::MVK;
 			default:
 				// Mobile?
 				return driver_vendor::unknown;
@@ -560,6 +597,11 @@ namespace vk
 		if (pgpu->optional_features_support.extended_device_fault)
 		{
 			requested_extensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+		}
+
+		if (pgpu->optional_features_support.provoking_vertex_last)
+		{
+			requested_extensions.push_back(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
 		}
 		
 #ifdef __APPLE__
@@ -805,6 +847,15 @@ namespace vk
 			device.pNext = &shader_barycentric_info;
 		}
 
+		VkPhysicalDeviceProvokingVertexFeaturesEXT provoking_vertex_info{};
+		if (pgpu->optional_features_support.provoking_vertex_last)
+		{
+			provoking_vertex_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT;
+			provoking_vertex_info.pNext = const_cast<void*>(device.pNext);
+			provoking_vertex_info.provokingVertexLast = VK_TRUE;
+			device.pNext = &provoking_vertex_info;
+		}
+
 		if (auto error = vkCreateDevice(*pgpu, &device, nullptr, &dev))
 		{
 			dump_debug_info(requested_extensions, enabled_features);
@@ -908,6 +959,11 @@ namespace vk
 	{
 		// Rebalance device local memory types
 		memory_map.device_local.rebalance();
+	}
+
+	bool render_device::get_debug_utils_support() const
+	{
+		return g_cfg.video.renderdoc_compatiblity && pgpu->optional_features_support.debug_utils;
 	}
 
 	void render_device::dump_debug_info(
@@ -1032,7 +1088,7 @@ namespace vk
 
 		for (u32 i = 0; i < memory_properties.memoryTypeCount; i++)
 		{
-			auto& type_info = memory_properties.memoryTypes[i];
+			const auto& type_info = memory_properties.memoryTypes[i];
 			memory_heap_map[type_info.heapIndex].types.push_back({ i, type_info.propertyFlags, 0 });
 		}
 
@@ -1040,9 +1096,9 @@ namespace vk
 		{
 			std::vector<memory_type> results;
 
-			for (auto& heap : memory_heap_map)
+			for (const auto& heap : memory_heap_map)
 			{
-				for (auto &type : heap.types)
+				for (const auto& type : heap.types)
 				{
 					if (((type.flags & desired_flags) == desired_flags) && !(type.flags & excluded_flags))
 					{

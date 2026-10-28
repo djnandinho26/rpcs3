@@ -906,7 +906,7 @@ std::string keyboard_pad_handler::GetKeyName(u32 keyCode)
 	return QKeySequence(keyCode).toString(QKeySequence::NativeText).toStdString();
 }
 
-std::vector<std::set<u32>> keyboard_pad_handler::GetKeyCombos(const std::string& cfg_string)
+std::vector<std::set<u32>> keyboard_pad_handler::GetKeyCombos(std::string_view cfg_string)
 {
 	std::vector<std::set<u32>> res;
 
@@ -943,10 +943,10 @@ u32 keyboard_pad_handler::GetKeyCode(const QString& keyName)
 	if (keyName == "Meta") return Qt::Key_Meta;
 #ifdef __APPLE__
 	// QKeySequence doesn't work properly for the arrow keys on macOS
-	if (keyName == "Num←") return Qt::Key_Left;
-	if (keyName == "Num↑") return Qt::Key_Up;
-	if (keyName == "Num→") return Qt::Key_Right;
-	if (keyName == "Num↓") return Qt::Key_Down;
+	if (keyName == "Num←" || keyName == "←") return Qt::Key_Left;
+	if (keyName == "Num↑" || keyName == "↑") return Qt::Key_Up;
+	if (keyName == "Num→" || keyName == "→") return Qt::Key_Right;
+	if (keyName == "Num↓" || keyName == "↓") return Qt::Key_Down;
 #endif
 
 	const QKeySequence seq(keyName);
@@ -1362,22 +1362,14 @@ void keyboard_pad_handler::process()
 			pad_internal.m_sticks[3].m_value
 		};
 
-		// Apply squircling
-		if (cfg->lpadsquircling != 0)
+		const auto apply_squircling = [&pad](u16& x_out, u16& y_out, u32 padsquircling, usz stick)
 		{
-			u16& lx = squircled_sticks[0];
-			u16& ly = squircled_sticks[1];
+			const auto& [angle, distance_to_center] = ConvertToSquirclePoint(x_out, y_out, padsquircling);
+			pad->m_angles[stick] = ConvertAngleToU8(angle, distance_to_center);
+		};
 
-			ConvertToSquirclePoint(lx, ly, cfg->lpadsquircling);
-		}
-
-		if (cfg->rpadsquircling != 0)
-		{
-			u16& rx = squircled_sticks[2];
-			u16& ry = squircled_sticks[3];
-
-			ConvertToSquirclePoint(rx, ry, cfg->rpadsquircling);
-		}
+		apply_squircling(squircled_sticks[0], squircled_sticks[1], cfg->lpadsquircling, 0);
+		apply_squircling(squircled_sticks[2], squircled_sticks[3], cfg->rpadsquircling, 1);
 
 		for (usz j = 0; j < pad->m_buttons.size(); j++)
 		{

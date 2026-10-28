@@ -139,7 +139,7 @@ std::unique_ptr<utils::serial> tar_object::get_file(const std::string& path, std
 		}
 		else
 		{
-			tar_log.notice("tar_object::get_file() failed to parse header: offset=0x%x, filesize=0x%x, header_first16=0x%016x", offset, max_size, read_from_ptr<be_t<u128>>(reinterpret_cast<const u8*>(&header)));
+			tar_log.notice("tar_object::get_file() failed to parse header: offset=0x%x, filesize=0x%x, header_first16=0x%016x", offset, max_size, read_from_ptr_unsafe<be_t<u128>>(reinterpret_cast<const u8*>(&header)));
 		}
 
 		return { size, {} };
@@ -226,6 +226,12 @@ bool tar_object::extract(const std::string& prefix_path, bool is_vfs)
 		}
 	};
 
+	if (prefix_path.empty())
+	{
+		// Must be VFS here
+		is_vfs = true;
+	}
+
 	for (iter = get_next(true); iter != m_map.end(); iter = get_next(false))
 	{
 		const TARHeader& header = iter->second.second;
@@ -234,18 +240,7 @@ bool tar_object::extract(const std::string& prefix_path, bool is_vfs)
 		// Backwards compatibility measure
 		const bool should_ignore = name.find(reinterpret_cast<const char*>(u8"＄")) != umax;
 
-		std::string result = name;
-
-		if (!prefix_path.empty())
-		{
-			result = prefix_path + '/' + result;
-		}
-		else
-		{
-			// Must be VFS here
-			is_vfs = true;
-			result.insert(result.begin(), '/');
-		}
+		std::string result = prefix_path + "/" + name;
 
 		if (is_vfs)
 		{
@@ -257,8 +252,13 @@ bool tar_object::extract(const std::string& prefix_path, bool is_vfs)
 				return false;
 			}
 		}
+		else if (!Emu.IsPathInsideDir(result, prefix_path, false))
+		{
+			tar_log.error("Error extracting %s: target path '%s' is outside of '%s'", name, result, prefix_path);
+			return false;
+		}
 
-		u64 mtime = octal_text_to_u64({header.mtime, std::size(header.mtime)});
+		const u64 mtime = octal_text_to_u64({header.mtime, std::size(header.mtime)});
 
 		// Let's use it for optional atime
 		u64 atime = octal_text_to_u64({header.padding, 12});
@@ -565,11 +565,12 @@ void tar_object::save_directory(const std::string& target_path, utils::serial& a
 		}
 	};
 
-	auto save_header = [&](const fs::stat_t& stat, const std::string& name)
+	auto save_header = [&](const fs::stat_t& stat, std::string_view name)
 	{
 		static_assert(sizeof(TARHeader) == 512);
+		ensure(src_dir_pos <= name.size());
 
-		std::string_view saved_path{name.size() == src_dir_pos ? name.c_str() : &::at32(name, src_dir_pos), name.size() - src_dir_pos};
+		std::string_view saved_path = name.size() == src_dir_pos ? std::string_view() : name.substr(src_dir_pos);
 
 		if (is_null)
 		{

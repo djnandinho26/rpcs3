@@ -8,6 +8,10 @@
 #include "Utilities/JIT.h"
 #include "util/v128.hpp"
 
+#ifdef ARCH_X64
+#include <immintrin.h>
+#endif
+
 #ifdef _MSC_VER
 #pragma warning(push, 0)
 #else
@@ -21,12 +25,15 @@
 #pragma GCC diagnostic ignored "-Wmissing-noreturn"
 #pragma GCC diagnostic ignored "-Wredundant-decls"
 #endif
+#include "llvm/Config/llvm-config.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Support/KnownBits.h"
+#include "llvm/Support/KnownFPClass.h"
+#include "llvm/Analysis/SimplifyQuery.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/IntrinsicsX86.h"
@@ -41,12 +48,39 @@
 #pragma GCC diagnostic pop
 #endif
 
+// MSVC can use intrinsics without compiling for its target feature
+#if defined(_MSC_VER) || !defined(ARCH_X64)
+#define GNUC_X64_TARGET(x)
+#else
+#define GNUC_X64_TARGET(x) [[gnu::target(x)]]
+#endif
+
 #include <functional>
 #include <unordered_map>
 #include <source_location>
 
 // Helper function
 llvm::Value* peek_through_bitcasts(llvm::Value*);
+
+inline bool llvm_has_terminator(const llvm::BasicBlock* bb)
+{
+#if LLVM_VERSION_MAJOR >= 23
+	return bb->hasTerminator();
+#else
+	return bb->getTerminator() != nullptr;
+#endif
+}
+
+// Constant fold the result of IRBuilder::CreateIntrinsic (LLVM 23+ IRBuilder may already return a folded constant)
+inline llvm::Constant* llvm_const_fold(llvm::Value* v)
+{
+	if (auto c = llvm::dyn_cast<llvm::Constant>(v))
+	{
+		return c;
+	}
+
+	return llvm::ConstantFoldInstruction(llvm::cast<llvm::Instruction>(v), llvm::DataLayout(""));
+}
 
 enum class i2 : char
 {
@@ -1176,11 +1210,7 @@ struct llvm_fshl
 	static llvm::Function* get_fshl(llvm::IRBuilder<>* ir)
 	{
 		const auto _module = ir->GetInsertBlock()->getParent()->getParent();
-#if LLVM_VERSION_MAJOR >= 21 || (LLVM_VERSION_MAJOR == 20 && LLVM_VERSION_MINOR >= 1)
 		return llvm::Intrinsic::getOrInsertDeclaration(_module, llvm::Intrinsic::fshl, {llvm_value_t<T>::get_type(ir->getContext())});
-#else
-		return llvm::Intrinsic::getDeclaration(_module, llvm::Intrinsic::fshl, {llvm_value_t<T>::get_type(ir->getContext())});
-#endif
 	}
 
 	static llvm::Value* fold(llvm::IRBuilder<>* ir, llvm::Value* v1, llvm::Value* v2, llvm::Value* v3)
@@ -1252,11 +1282,7 @@ struct llvm_fshr
 	static llvm::Function* get_fshr(llvm::IRBuilder<>* ir)
 	{
 		const auto _module = ir->GetInsertBlock()->getParent()->getParent();
-#if LLVM_VERSION_MAJOR >= 21 || (LLVM_VERSION_MAJOR == 20 && LLVM_VERSION_MINOR >= 1)
 		return llvm::Intrinsic::getOrInsertDeclaration(_module, llvm::Intrinsic::fshr, {llvm_value_t<T>::get_type(ir->getContext())});
-#else
-		return llvm::Intrinsic::getDeclaration(_module, llvm::Intrinsic::fshr, {llvm_value_t<T>::get_type(ir->getContext())});
-#endif
 	}
 
 	static llvm::Value* fold(llvm::IRBuilder<>* ir, llvm::Value* v1, llvm::Value* v2, llvm::Value* v3)
@@ -1319,10 +1345,95 @@ struct llvm_rol
 
 	llvm_expr_t<A1> a1;
 	llvm_expr_t<A2> a2;
+	bool use_sve_xar = false;
 
 	static_assert(llvm_value_t<T>::is_sint || llvm_value_t<T>::is_uint, "llvm_rol<>: invalid type");
 
 	static constexpr bool is_ok = llvm_value_t<T>::is_sint || llvm_value_t<T>::is_uint;
+
+#ifdef ARCH_ARM64
+	static bool get_constant_splat(llvm::Value* value, u64& result)
+	{
+		if (const auto constant = llvm::dyn_cast<llvm::ConstantInt>(value))
+		{
+			result = constant->getZExtValue();
+			return true;
+		}
+
+		if (llvm::isa<llvm::ConstantAggregateZero>(value))
+		{
+			result = 0;
+			return true;
+		}
+
+		const auto vector_type = llvm::dyn_cast<llvm::FixedVectorType>(value->getType());
+
+		if (!vector_type)
+		{
+			return false;
+		}
+
+		const auto element_count = vector_type->getNumElements();
+		const auto get_element = [&](u32 index) -> llvm::Constant*
+		{
+			if (const auto data = llvm::dyn_cast<llvm::ConstantDataVector>(value))
+			{
+				return data->getElementAsConstant(index);
+			}
+
+			if (const auto vector = llvm::dyn_cast<llvm::ConstantVector>(value))
+			{
+				return vector->getAggregateElement(index);
+			}
+
+			return nullptr;
+		};
+
+		const auto first_element = llvm::dyn_cast_or_null<llvm::ConstantInt>(get_element(0));
+
+		if (!first_element)
+		{
+			return false;
+		}
+
+		result = first_element->getZExtValue();
+
+		for (u32 i = 1; i < element_count; i++)
+		{
+			const auto element = llvm::dyn_cast_or_null<llvm::ConstantInt>(get_element(i));
+
+			if (!element || element->getZExtValue() != result)
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	static llvm::Value* to_sve_vector(llvm::IRBuilder<>* ir, llvm::Value* value)
+	{
+		if (llvm::isa<llvm::ScalableVectorType>(value->getType()))
+		{
+			return value;
+		}
+
+		const auto fixed_type = llvm::cast<llvm::FixedVectorType>(value->getType());
+		const auto scalable_type = llvm::ScalableVectorType::get(fixed_type->getElementType(), fixed_type->getNumElements());
+
+		return ir->CreateInsertVector(scalable_type, llvm::UndefValue::get(scalable_type), value, ir->getInt64(0));
+	}
+
+	static llvm::Value* from_sve_vector(llvm::IRBuilder<>* ir, llvm::Value* value, llvm::FixedVectorType* fixed_type)
+	{
+		if (value->getType() == fixed_type)
+		{
+			return value;
+		}
+
+		return ir->CreateExtractVector(fixed_type, value, ir->getInt64(0));
+	}
+#endif
 
 	llvm::Value* eval(llvm::IRBuilder<>* ir) const
 	{
@@ -1333,6 +1444,28 @@ struct llvm_rol
 		{
 			return llvm_fshl<A1, A1, A2>::fold(ir, v1, v1, v2);
 		}
+
+#ifdef ARCH_ARM64
+		u64 rotate = 0;
+
+		if (use_sve_xar && llvm::isa<llvm::FixedVectorType>(v1->getType()) && get_constant_splat(v2, rotate))
+		{
+			constexpr u64 element_size = llvm_value_t<T>::esize;
+			const u32 rotate_right = static_cast<u32>((element_size - (rotate % element_size)) % element_size);
+
+			if (rotate_right == 0)
+			{
+				return v1;
+			}
+
+			const auto fixed_type = llvm::cast<llvm::FixedVectorType>(v1->getType());
+			const auto data = to_sve_vector(ir, v1);
+			const auto zero = llvm::Constant::getNullValue(data->getType());
+			const auto result = ir->CreateIntrinsic(llvm::Intrinsic::aarch64_sve_xar, {data->getType()}, {data, zero, ir->getInt32(rotate_right)});
+
+			return from_sve_vector(ir, result, fixed_type);
+		}
+#endif
 
 		return ir->CreateCall(llvm_fshl<A1, A1, A2>::get_fshl(ir), {v1, v1, v2});
 	}
@@ -2255,11 +2388,7 @@ struct llvm_add_sat
 	static llvm::Function* get_add_sat(llvm::IRBuilder<>* ir)
 	{
 		const auto _module = ir->GetInsertBlock()->getParent()->getParent();
-#if LLVM_VERSION_MAJOR >= 21 || (LLVM_VERSION_MAJOR == 20 && LLVM_VERSION_MINOR >= 1)
 		return llvm::Intrinsic::getOrInsertDeclaration(_module, intr, {llvm_value_t<T>::get_type(ir->getContext())});
-#else
-		return llvm::Intrinsic::getDeclaration(_module, intr, {llvm_value_t<T>::get_type(ir->getContext())});
-#endif
 	}
 
 	llvm::Value* eval(llvm::IRBuilder<>* ir) const
@@ -2342,11 +2471,7 @@ struct llvm_sub_sat
 	static llvm::Function* get_sub_sat(llvm::IRBuilder<>* ir)
 	{
 		const auto _module = ir->GetInsertBlock()->getParent()->getParent();
-#if LLVM_VERSION_MAJOR >= 21 || (LLVM_VERSION_MAJOR == 20 && LLVM_VERSION_MINOR >= 1)
 		return llvm::Intrinsic::getOrInsertDeclaration(_module, intr, {llvm_value_t<T>::get_type(ir->getContext())});
-#else
-		return llvm::Intrinsic::getDeclaration(_module, intr, {llvm_value_t<T>::get_type(ir->getContext())});
-#endif
 	}
 
 	llvm::Value* eval(llvm::IRBuilder<>* ir) const
@@ -2664,7 +2789,7 @@ struct llvm_ctlz
 
 		if (llvm::isa<llvm::Constant>(v))
 		{
-			return llvm::ConstantFoldInstruction(ir->CreateIntrinsic(llvm::Intrinsic::ctlz, {v->getType()}, {v, ir->getFalse()}), llvm::DataLayout(""));
+			return llvm_const_fold(ir->CreateIntrinsic(llvm::Intrinsic::ctlz, {v->getType()}, {v, ir->getFalse()}));
 		}
 
 		return ir->CreateIntrinsic(llvm::Intrinsic::ctlz, {v->getType()}, {v, ir->getFalse()});
@@ -2709,7 +2834,7 @@ struct llvm_ctpop
 
 		if (llvm::isa<llvm::Constant>(v))
 		{
-			return llvm::ConstantFoldInstruction(ir->CreateUnaryIntrinsic(llvm::Intrinsic::ctpop, v), llvm::DataLayout(""));
+			return llvm_const_fold(ir->CreateUnaryIntrinsic(llvm::Intrinsic::ctpop, v));
 		}
 
 		return ir->CreateUnaryIntrinsic(llvm::Intrinsic::ctpop, v);
@@ -2830,7 +2955,7 @@ struct llvm_fsqrt
 
 		if (llvm::isa<llvm::Constant>(v))
 		{
-			if (auto c = llvm::ConstantFoldInstruction(ir->CreateUnaryIntrinsic(llvm::Intrinsic::sqrt, v), llvm::DataLayout("")))
+			if (auto c = llvm_const_fold(ir->CreateUnaryIntrinsic(llvm::Intrinsic::sqrt, v)))
 			{
 				// Will fail in some cases (such as negative constant)
 				return c;
@@ -2876,7 +3001,7 @@ struct llvm_fabs
 
 		if (llvm::isa<llvm::Constant>(v))
 		{
-			return llvm::ConstantFoldInstruction(ir->CreateUnaryIntrinsic(llvm::Intrinsic::fabs, v), llvm::DataLayout(""));
+			return llvm_const_fold(ir->CreateUnaryIntrinsic(llvm::Intrinsic::fabs, v));
 		}
 
 		return ir->CreateUnaryIntrinsic(llvm::Intrinsic::fabs, v);
@@ -2923,7 +3048,7 @@ struct llvm_fmuladd
 
 		if (llvm::isa<llvm::Constant>(v1) && llvm::isa<llvm::Constant>(v2) && llvm::isa<llvm::Constant>(v3))
 		{
-			return llvm::ConstantFoldInstruction(ir->CreateIntrinsic(llvm::Intrinsic::fma, {v1->getType()}, {v1, v2, v3}), llvm::DataLayout(""));
+			return llvm_const_fold(ir->CreateIntrinsic(llvm::Intrinsic::fma, {v1->getType()}, {v1, v2, v3}));
 		}
 
 		return ir->CreateIntrinsic(strict_fma ? llvm::Intrinsic::fma : llvm::Intrinsic::fmuladd, {v1->getType()}, {v1, v2, v3});
@@ -3407,9 +3532,13 @@ public:
 
 	template <typename T, typename U>
 		requires llvm_rol<T, U>::is_ok
-	static auto rol(T&& a, U&& b)
+	auto rol(T&& a, U&& b)
 	{
+#ifdef ARCH_ARM64
+		return llvm_rol<T, U>{std::forward<T>(a), std::forward<U>(b), m_use_sve2_128};
+#else
 		return llvm_rol<T, U>{std::forward<T>(a), std::forward<U>(b)};
+#endif
 	}
 
 	template <typename T, typename U>
@@ -3583,11 +3712,22 @@ public:
 
 	// Infinite-precision shift left
 	template <typename T, typename U, typename CT = llvm_common_t<T, U>>
-	auto inf_shl(T&& a, U&& b)
+	value_t<CT> inf_shl(T&& a, U&& b)
 	{
 		static constexpr u32 esz = llvm_value_t<CT>::esize;
 
-		return expr(select(b < esz, a << b, splat<CT>(0)), [](llvm::Value*& value, llvm::Module* _m) -> llvm_match_tuple<T, U>
+#ifdef ARCH_ARM64
+		auto sh = eval(std::forward<U>(b));
+		auto k = get_known_bits(sh);
+		const auto max_shift = llvm::APInt(k.Zero.getBitWidth(), esz * 2 - 1);
+
+		if ((k.Zero | max_shift).isAllOnes())
+		{
+			return ushl(std::forward<T>(a), sh);
+		}
+#endif
+
+		auto result = expr(select(b < esz, a << b, splat<CT>(0)), [](llvm::Value*& value, llvm::Module* _m) -> llvm_match_tuple<T, U>
 		{
 			static const auto M = match<CT>();
 
@@ -3605,15 +3745,28 @@ public:
 			value = nullptr;
 			return {};
 		});
+
+		return eval(result);
 	}
 
 	// Infinite-precision logical shift right (unsigned)
 	template <typename T, typename U, typename CT = llvm_common_t<T, U>>
-	auto inf_lshr(T&& a, U&& b)
+	value_t<CT> inf_lshr(T&& a, U&& b)
 	{
 		static constexpr u32 esz = llvm_value_t<CT>::esize;
 
-		return expr(select(b < esz, a >> b, splat<CT>(0)), [](llvm::Value*& value, llvm::Module* _m) -> llvm_match_tuple<T, U>
+#ifdef ARCH_ARM64
+		auto sh = eval(std::forward<U>(b));
+		auto k = get_known_bits(sh);
+		const auto max_shift = llvm::APInt(k.Zero.getBitWidth(), esz * 2 - 1);
+
+		if ((k.Zero | max_shift).isAllOnes())
+		{
+			return ushl(std::forward<T>(a), -sh);
+		}
+#endif
+
+		auto result = expr(select(b < esz, a >> b, splat<CT>(0)), [](llvm::Value*& value, llvm::Module* _m) -> llvm_match_tuple<T, U>
 		{
 			static const auto M = match<CT>();
 
@@ -3631,6 +3784,8 @@ public:
 			value = nullptr;
 			return {};
 		});
+
+		return eval(result);
 	}
 
 	// Infinite-precision arithmetic shift right (signed)
@@ -3663,21 +3818,46 @@ public:
 	llvm::Function* get_intrinsic(llvm::Intrinsic::ID id)
 	{
 		const auto _module = m_ir->GetInsertBlock()->getParent()->getParent();
-#if LLVM_VERSION_MAJOR >= 21 || (LLVM_VERSION_MAJOR == 20 && LLVM_VERSION_MINOR >= 1)
 		return llvm::Intrinsic::getOrInsertDeclaration(_module, id, {get_type<Types>()...});
-#else
-		return llvm::Intrinsic::getDeclaration(_module, id, {get_type<Types>()...});
-#endif
+	}
+
+	template <typename T1, typename T2, typename T3>
+	value_t<u32[4]> vperm2d128From512(T1 a, T2 b, T3 c)
+	{
+		value_t<u32[4]> result;
+		value_t<u32[16]> perm512;
+
+		const auto data0 = a.eval(m_ir);
+		const auto index128 = b.eval(m_ir);
+		const auto data1 = c.eval(m_ir);
+
+		const auto index512 = m_ir->CreateInsertVector(get_type<u32[16]>(), llvm::UndefValue::get(get_type<u32[16]>()), index128, m_ir->getInt64(0));
+		perm512.value = m_ir->CreateCall(get_intrinsic(llvm::Intrinsic::x86_avx512_vpermi2var_d_512), {data0, index512, data1});
+
+		result.value = m_ir->CreateExtractVector(get_type<u32[4]>(), perm512.value, m_ir->getInt64(0));
+		return result;
 	}
 
 	template <typename T1, typename T2>
-	value_t<u8[16]> gf2p8affineqb(T1 a, T2 b, u8 c)
+	GNUC_X64_TARGET("gfni") value_t<u8[16]> gf2p8affineqb(T1 a, T2 b, u8 c)
 	{
 		value_t<u8[16]> result;
 
 		const auto data0 = a.eval(m_ir);
 		const auto data1 = b.eval(m_ir);
 
+#ifdef ARCH_X64
+		const auto [a_is_const, a_data] = get_const_vector(data0, -1);
+		const auto [b_is_const, b_data] = get_const_vector(data1, -1);
+
+		if (a_is_const && b_is_const)
+		{
+			const auto affine = _mm_xor_si128(_mm_gf2p8affine_epi64_epi8(a_data, b_data, 0), _mm_set1_epi8(c));
+			result.value = llvm::ConstantDataVector::get(m_context, llvm::ArrayRef(static_cast<v128>(affine)._u8.m_data, 16));
+			return result;
+		}
+#endif
+		
 		const auto immediate = (llvm_const_int<u8>{c});
 		const auto imm8 = immediate.eval(m_ir);
 
@@ -3693,14 +3873,27 @@ public:
 		const auto data0 = a.eval(m_ir);
 		const auto data1 = b.eval(m_ir);
 		const auto data2 = c.eval(m_ir);
+		
+#ifdef ARCH_X64
+		const auto [a_is_const, a_data] = get_const_vector(data0, -1);
+		const auto [b_is_const, b_data] = get_const_vector(data1, -1);
+		const auto [c_is_const, c_data] = get_const_vector(data2, -1);
 
-#if LLVM_VERSION_MAJOR >= 22
-		// LLVM 22+ changed the intrinsic signature from v4i32 to v16i8 for operands 2 and 3
+		if (a_is_const && b_is_const && c_is_const)
+		{
+			__m128i dpbusd;
+			if (utils::has_avx512_icl())
+				dpbusd = _mm_wrapper_dpbusd_avx512vnni(a_data, b_data, c_data);
+			else
+				dpbusd = _mm_wrapper_dpbusd_avxvnni(a_data, b_data, c_data);
+
+			result.value = llvm::ConstantDataVector::get(m_context, llvm::ArrayRef(static_cast<v128>(dpbusd)._u32.m_data, 4));
+			return result;
+		}
+#endif
+
 		result.value = m_ir->CreateCall(get_intrinsic(llvm::Intrinsic::x86_avx512_vpdpbusd_128),
 			{data0, m_ir->CreateBitCast(data1, get_type<u8[16]>()), m_ir->CreateBitCast(data2, get_type<u8[16]>())});
-#else
-		result.value = m_ir->CreateCall(get_intrinsic(llvm::Intrinsic::x86_avx512_vpdpbusd_128), {data0, data1, data2});
-#endif
 		return result;
 	}
 
@@ -3893,6 +4086,18 @@ template <typename T1, typename T2, typename T3>
 		return sve_mlal<u32[4]>(llvm::Intrinsic::aarch64_sve_umlalt, acc, a, b);
 	}
 
+	template <typename T1, typename T2, typename T = llvm_common_t<T1, T2>>
+	value_t<T> ushl(T1 a, T2 b)
+	{
+		value_t<T> result;
+
+		const auto data0 = a.eval(m_ir);
+		const auto data1 = b.eval(m_ir);
+
+		result.value = m_ir->CreateCall(get_intrinsic<T>(llvm::Intrinsic::aarch64_neon_ushl), {data0, data1});
+		return result;
+	}
+
 	template <typename T1, typename T2>
 	auto addp(T1 a, T2 b)
 	{
@@ -4054,13 +4259,27 @@ template <typename T1, typename T2, typename T3>
 	}
 
 	template <typename T1, typename T2, typename T3>
-	value_t<f32[4]> vfixupimmps(T1 a, T2 b, T3 c, u8 d, u8 e)
+	GNUC_X64_TARGET("avx512vl") value_t<f32[4]> vfixupimmps(T1 a, T2 b, T3 c, u8 d, u8 e)
 	{
 		value_t<f32[4]> result;
 
 		const auto data0 = a.eval(m_ir);
 		const auto data1 = b.eval(m_ir);
 		const auto data2 = c.eval(m_ir);
+		
+#ifdef ARCH_X64
+		const auto [a_is_const, a_data] = get_const_vector(data0, -1);
+		const auto [b_is_const, b_data] = get_const_vector(data1, -1);
+		const auto [c_is_const, c_data] = get_const_vector(data2, -1);
+
+		if (a_is_const && b_is_const && c_is_const)
+		{
+			const auto vfixup = _mm_mask_fixupimm_ps(a_data, e, b_data, c_data, 0); // flag reporting doesn't matter for constants
+			result.value = llvm::ConstantDataVector::get(m_context, llvm::ArrayRef(static_cast<v128>(vfixup)._f.m_data, 4));
+			return result;
+		}
+#endif
+		
 		const auto immediate = (llvm_const_int<u32>{d});
 		const auto imm32 = immediate.eval(m_ir);
 		const auto immediate2 = (llvm_const_int<u8>{e});
@@ -4101,10 +4320,55 @@ template <typename T1, typename T2, typename T3>
 	template <typename T = v128>
 	llvm::Constant* make_const_vector(T, llvm::Type*, u32 = __builtin_LINE());
 
+	// IR is emitted in a single pass: phi nodes may still be missing their back-edge incoming
+	// values, so any known bits computeKnownBits derives through a phi are unsound for the
+	// final IR. Whether a phi is complete cannot be queried (the CFG edges from not-yet-emitted
+	// predecessors don't exist either), so reject every value whose bits may derive from a phi.
+	static bool is_known_bits_safe(llvm::Value* value)
+	{
+		llvm::SmallPtrSet<const llvm::Value*, 32> visited;
+		llvm::SmallVector<const llvm::Value*, 32> worklist{value};
+
+		while (!worklist.empty())
+		{
+			const llvm::Value* v = worklist.pop_back_val();
+
+			if (!visited.insert(v).second)
+			{
+				continue;
+			}
+
+			if (llvm::isa<llvm::PHINode>(v) || visited.size() > 256)
+			{
+				return false;
+			}
+
+			// Loads don't propagate operand bits; constants and arguments are leaves
+			if (auto i = llvm::dyn_cast<llvm::Instruction>(v); i && !llvm::isa<llvm::LoadInst>(i))
+			{
+				for (const llvm::Use& op : i->operands())
+				{
+					worklist.push_back(op.get());
+				}
+			}
+		}
+
+		return true;
+	}
+
+	llvm::KnownBits get_known_bits_fallback(llvm::Value* value);
+
 	template <typename T>
 	llvm::KnownBits get_known_bits(T a)
 	{
-		return llvm::computeKnownBits(a.eval(m_ir), m_module->getDataLayout());
+		llvm::Value* value = a.eval(m_ir);
+
+		if (!is_known_bits_safe(value))
+		{
+			return get_known_bits_fallback(value);
+		}
+
+		return llvm::computeKnownBits(value, m_module->getDataLayout());
 	}
 
 	template <typename T>
@@ -4112,10 +4376,32 @@ template <typename T1, typename T2, typename T3>
 	{
 		return llvm::KnownBits::makeConstant(llvm::APInt(sizeof(T) * 8, u64(value)));
 	}
+	
+	template <unsigned depth = llvm::MaxAnalysisRecursionDepth, typename T>
+	llvm::KnownFPClass get_known_fp_class(T a, llvm::FPClassTest interested_classes)
+	{
+		static_assert(depth <= llvm::MaxAnalysisRecursionDepth, "Depth parameter can only decrease search. Default is max.");
+
+		const llvm::SimplifyQuery SQ(m_module->getDataLayout());
+		return llvm::computeKnownFPClass(a.eval(m_ir), interested_classes, SQ, llvm::MaxAnalysisRecursionDepth - depth);
+	}
 
 private:
 	// Custom intrinsic table
 	std::unordered_map<std::string_view, std::function<llvm::Value*(llvm::CallInst*)>> m_intrinsics;
+
+#ifdef ARCH_X64
+	// LLVM uses the same intrinsic despite different encodings
+	GNUC_X64_TARGET("avx512vnni,avx512vl") __m128i _mm_wrapper_dpbusd_avx512vnni(__m128i a, __m128i b, __m128i c)
+	{
+		return _mm_dpbusd_epi32(a, b, c);
+	}
+
+	GNUC_X64_TARGET("avxvnni") __m128i _mm_wrapper_dpbusd_avxvnni(__m128i a, __m128i b, __m128i c)
+	{
+		return _mm_dpbusd_avx_epi32(a, b, c);
+	}
+#endif
 
 public:
 	// Call custom intrinsic by name

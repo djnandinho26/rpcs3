@@ -34,10 +34,11 @@ struct p2ps_encapsulated_tcp
 
 enum p2ps_stream_status
 {
-	stream_closed,      // Default when port is not listening nor connected
-	stream_listening,   // Stream is listening, accepting SYN packets
-	stream_handshaking, // Currently handshaking
-	stream_connected,   // This is an established connection(after tcp handshake)
+	stream_closed,       // Default when the stream was never listening nor connected
+	stream_listening,    // Stream is listening, accepting SYN packets
+	stream_handshaking,  // Currently handshaking
+	stream_connected,    // This is an established connection(after tcp handshake)
+	stream_disconnected, // Was connected but is now closed
 };
 
 enum p2ps_tcp_flags : u8
@@ -61,7 +62,7 @@ public:
 	static constexpr u32 id_type = 2;
 
 	lv2_socket_p2ps(lv2_socket_family family, lv2_socket_type type, lv2_ip_protocol protocol);
-	lv2_socket_p2ps(socket_type socket, u16 port, u16 vport, u32 op_addr, u16 op_port, u16 op_vport, u64 cur_seq, u64 data_beg_seq, s32 so_nbio);
+	lv2_socket_p2ps(socket_type socket, u16 port, u16 vport, u32 op_addr, u16 op_port, u16 op_vport, u64 cur_seq, u64 data_beg_seq, s32 so_nbio, s32 so_rcvbuf);
 	lv2_socket_p2ps(utils::serial& ar, lv2_socket_type type);
 	void save(utils::serial& ar);
 
@@ -91,13 +92,14 @@ public:
 
 	void poll(sys_net_pollfd& sn_pfd, pollfd& native_pfd) override;
 	std::tuple<bool, bool, bool> select(bs_t<poll_t> selected, pollfd& native_pfd) override;
+	void get_sockinfo(sys_net_sockinfo_t& info) override;
 
 private:
+	bs_t<poll_t> get_pending_events() const override;
+	void signal_pending_events();
 	void close_stream_nl(nt_p2p_port* p2p_port);
 
 private:
-	static constexpr usz MAX_RECEIVED_BUFFER = (1024 * 1024 * 10);
-
 	p2ps_stream_status status = p2ps_stream_status::stream_closed;
 
 	usz max_backlog = 0; // set on listen
@@ -109,6 +111,11 @@ private:
 	u64 data_beg_seq   = 0;                       // Seq of first byte of received_data
 	u64 data_available = 0;                       // Amount of continuous data available(calculated on ACK send)
 	std::map<u64, std::vector<u8>> received_data; // holds seq/data of data received
+	usz received_data_size = 0;                   // Payload of received_data plus the cost of describing each segment
+
+	// Simulates the cost of each segment as size of seq(u32 on ps3) + payload size
+	static constexpr usz SEGMENT_OVERHEAD = sizeof(u32);
+	static constexpr usz get_segment_cost(usz payload_size) { return SEGMENT_OVERHEAD + payload_size; }
 
 	u64 cur_seq = 0; // SEQ of next packet to be sent
 };

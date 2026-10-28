@@ -15,6 +15,9 @@ struct cfg_ps_move final : cfg::node
 	cfg::uint<0, 359> hue{ this, "Hue", 0, true };
 	cfg::uint<0, 180> hue_threshold{ this, "Hue Threshold", 10, true };
 	cfg::uint<0, 255> saturation_threshold{ this, "Saturation Threshold", 10, true };
+	cfg::uint<0, 255> value_threshold{ this, "Value Threshold", 150, true };
+	cfg::_bool hue_calibrated{ this, "Hue Calibrated", false, true }; // The calibrated hue is valid for the current color
+	cfg::uint<0, 359> calibrated_hue{ this, "Calibrated Hue", 0, true }; // The hue of the sphere as seen by the camera
 };
 
 struct cfg_ps_moves final : cfg::node
@@ -28,6 +31,7 @@ struct cfg_ps_moves final : cfg::node
 
 	cfg::_float<0, 50> min_radius{ this, "Minimum Radius", 1.0f, true }; // Percentage of image width
 	cfg::_float<0, 50> max_radius{ this, "Maximum Radius", 10.0f, true }; // Percentage of image width
+	cfg::uint<1, 100> default_brightness{ this, "Default Orb Brightness", 1, true }; // Percentage
 
 	std::array<cfg_ps_move*, 4> move{ &move1, &move2, &move3, &move4 };
 

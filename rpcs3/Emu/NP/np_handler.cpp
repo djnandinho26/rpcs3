@@ -33,14 +33,16 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <ifaddrs.h>
 #ifdef __clang__
 #pragma clang diagnostic pop
 #endif
 #endif
 
 #if defined(__FreeBSD__) || defined(__APPLE__)
-#include <ifaddrs.h>
 #include <net/if_dl.h>
+#include <net/route.h>
+#include <sys/sysctl.h>
 #endif
 
 #include "util/yaml.hpp"
@@ -116,7 +118,7 @@ namespace np
 		parse();
 	}
 
-	std::size_t ticket::size() const
+	usz ticket::size() const
 	{
 		return raw_data.size();
 	}
@@ -258,7 +260,7 @@ namespace np
 		return std::string(vec.begin(), it);
 	}
 
-	std::optional<ticket_data> ticket::parse_node(std::size_t index) const
+	std::optional<ticket_data> ticket::parse_node(usz index) const
 	{
 		if ((index + MIN_TICKET_DATA_SIZE) > size())
 		{
@@ -268,11 +270,11 @@ namespace np
 
 		ticket_data tdata{};
 		const auto* ptr = data() + index;
-		tdata.id = read_from_ptr<be_t<u16>>(ptr);
-		tdata.len = read_from_ptr<be_t<u16>>(ptr + 2);
-		const auto* data_ptr = data() + index + 4;
+		tdata.id = read_from_ptr_unsafe<be_t<u16>>(ptr);
+		tdata.len = read_from_ptr_unsafe<be_t<u16>>(ptr, 2);
+		const usz data_offset = index + 4;
 
-		auto check_size = [&](std::size_t expected) -> bool
+		auto check_size = [&](usz expected) -> bool
 		{
 			if ((index + MIN_TICKET_DATA_SIZE + expected) > size())
 			{
@@ -294,7 +296,7 @@ namespace np
 			{
 				return std::nullopt;
 			}
-			tdata.data.data_u32 = read_from_ptr<be_t<u32>>(data_ptr);
+			tdata.data.data_u32 = read_from_ptr_unsafe<be_t<u32>>(data(), data_offset);
 			break;
 		case 2:
 		case 7:
@@ -302,7 +304,7 @@ namespace np
 			{
 				return std::nullopt;
 			}
-			tdata.data.data_u64 = read_from_ptr<be_t<u64>>(data_ptr);
+			tdata.data.data_u64 = read_from_ptr_unsafe<be_t<u64>>(data(), data_offset);
 			break;
 		case 4:
 		case 8:
@@ -311,7 +313,7 @@ namespace np
 				return std::nullopt;
 			}
 			tdata.data.data_vec = std::vector<u8>(tdata.len);
-			memcpy(tdata.data.data_vec.data(), data_ptr, tdata.len);
+			memcpy(tdata.data.data_vec.data(), data() + data_offset, tdata.len);
 			break;
 		default:
 			if ((tdata.id & 0x3000) == 0x3000)
@@ -321,7 +323,7 @@ namespace np
 					return std::nullopt;
 				}
 
-				std::size_t sub_index = 0;
+				usz sub_index = 0;
 				tdata.data.data_nodes = {};
 				while (sub_index < tdata.len)
 				{
@@ -352,14 +354,14 @@ namespace np
 			return;
 		}
 
-		version = read_from_ptr<be_t<u32>>(data());
+		version = read_from_ptr_unsafe<be_t<u32>>(data());
 		if (version != 0x21010000)
 		{
 			ticket_log.error("Invalid version: 0x%08x", version);
 			return;
 		}
 
-		u32 given_size = read_from_ptr<be_t<u32>>(data() + 4);
+		u32 given_size = read_from_ptr_unsafe<be_t<u32>>(data(), 4);
 		if ((given_size + 8) != size())
 		{
 			ticket_log.error("Size mismatch (gs: %d vs s: %d)", given_size, size());
@@ -479,6 +481,8 @@ namespace np
 			if (bind_ip)
 				local_ip_addr = bind_ip;
 
+			discover_route();
+
 			if (g_cfg.net.upnp_enabled)
 				upnp.upnp_enable();
 		}
@@ -497,6 +501,8 @@ namespace np
 		}
 
 		ar(is_NP_Lookup_init, is_NP_Score_init, is_NP2_init, is_NP2_Match2_init, is_NP_Auth_init, manager_cb, manager_cb_arg, std::as_bytes(std::span(&basic_handler, 1)), is_connected, is_psn_active, hostname, ether_address, local_ip_addr, public_ip_addr, dns_ip);
+
+		discover_route();
 
 		// Call init func if needed (np_memory is unaffected when an empty pool is provided)
 		init_NP(0, vm::null);
@@ -700,6 +706,124 @@ namespace np
 		return false;
 	}
 
+	void np_handler::discover_route()
+	{
+		const u32 ip = local_ip_addr;
+		u32 mask = 0;
+		u32 gateway = 0;
+
+#ifdef _WIN32
+		std::vector<u8> adapter_infos(sizeof(IP_ADAPTER_INFO));
+		ULONG size_infos = sizeof(IP_ADAPTER_INFO);
+
+		if (GetAdaptersInfo(reinterpret_cast<PIP_ADAPTER_INFO>(adapter_infos.data()), &size_infos) == ERROR_BUFFER_OVERFLOW)
+			adapter_infos.resize(size_infos);
+
+		if (GetAdaptersInfo(reinterpret_cast<PIP_ADAPTER_INFO>(adapter_infos.data()), &size_infos) == NO_ERROR && size_infos)
+		{
+			for (PIP_ADAPTER_INFO info = reinterpret_cast<PIP_ADAPTER_INFO>(adapter_infos.data()); info && !mask; info = info->Next)
+			{
+				for (PIP_ADDR_STRING addr = &info->IpAddressList; addr; addr = addr->Next)
+				{
+					in_addr conv{};
+
+					if (inet_pton(AF_INET, addr->IpAddress.String, &conv) != 1 || conv.s_addr != ip)
+						continue;
+
+					if (inet_pton(AF_INET, addr->IpMask.String, &conv) == 1)
+						mask = conv.s_addr;
+
+					if (inet_pton(AF_INET, info->GatewayList.IpAddress.String, &conv) == 1)
+						gateway = conv.s_addr;
+
+					break;
+				}
+			}
+		}
+#else
+		std::string ifname;
+		ifaddrs* ifap;
+
+		if (getifaddrs(&ifap) == 0)
+		{
+			for (ifaddrs* p = ifap; p; p = p->ifa_next)
+			{
+				if (p->ifa_addr && p->ifa_netmask && p->ifa_addr->sa_family == AF_INET && reinterpret_cast<sockaddr_in*>(p->ifa_addr)->sin_addr.s_addr == ip)
+				{
+					mask = reinterpret_cast<sockaddr_in*>(p->ifa_netmask)->sin_addr.s_addr;
+					ifname = p->ifa_name;
+					break;
+				}
+			}
+
+			freeifaddrs(ifap);
+		}
+
+#if defined(__FreeBSD__) || defined(__APPLE__)
+		int mib[] = {CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_FLAGS, RTF_GATEWAY};
+		usz size = 0;
+
+		if (!ifname.empty() && sysctl(mib, 6, nullptr, &size, nullptr, 0) == 0 && size)
+		{
+			std::vector<u8> routes(size);
+			const u32 ifindex = if_nametoindex(ifname.c_str());
+
+			if (sysctl(mib, 6, routes.data(), &size, nullptr, 0) == 0)
+			{
+#ifdef __APPLE__
+				constexpr usz align = sizeof(u32);
+#else
+				constexpr usz align = sizeof(long);
+#endif
+				for (usz pos = 0; pos + sizeof(rt_msghdr) <= size;)
+				{
+					const auto rtm = reinterpret_cast<const rt_msghdr*>(routes.data() + pos);
+					pos += rtm->rtm_msglen;
+
+					if (!rtm->rtm_msglen || rtm->rtm_index != ifindex || (rtm->rtm_addrs & (RTA_DST | RTA_GATEWAY)) != (RTA_DST | RTA_GATEWAY))
+						continue;
+
+					const auto dst = reinterpret_cast<const sockaddr*>(rtm + 1);
+					const auto gw = reinterpret_cast<const sockaddr*>(reinterpret_cast<const u8*>(dst) + (dst->sa_len ? utils::align<usz>(dst->sa_len, align) : align));
+
+					if (dst->sa_family == AF_INET && gw->sa_family == AF_INET && reinterpret_cast<const sockaddr_in*>(dst)->sin_addr.s_addr == 0)
+					{
+						gateway = reinterpret_cast<const sockaddr_in*>(gw)->sin_addr.s_addr;
+						break;
+					}
+				}
+			}
+		}
+#elif defined(__linux__)
+		if (fs::file route{"/proc/net/route"})
+		{
+			for (const std::string& line : fmt::split(route.to_string(), {"\n"}))
+			{
+				char name[IFNAMSIZ + 1]{};
+				u32 dest = 0;
+				u32 gw = 0;
+
+				if (std::sscanf(line.c_str(), "%16s %x %x", name, &dest, &gw) == 3 && dest == 0 && ifname == name)
+				{
+					gateway = gw;
+					break;
+				}
+			}
+		}
+#endif
+#endif
+
+		if (!mask)
+			mask = std::bit_cast<u32, be_t<u32>>(0xffffff00);
+
+		if (!gateway)
+			gateway = (ip & mask) | std::bit_cast<u32, be_t<u32>>(1);
+
+		netmask = mask;
+		default_route = gateway;
+		nph_log.notice("discover_route: netmask %s, default route %s", ip_to_string(mask), ip_to_string(gateway));
+	}
+
 	const std::array<u8, 6>& np_handler::get_ether_addr() const
 	{
 		return ether_address;
@@ -728,6 +852,16 @@ namespace np
 	u32 np_handler::get_bind_ip() const
 	{
 		return bind_ip;
+	}
+
+	u32 np_handler::get_netmask() const
+	{
+		return netmask;
+	}
+
+	u32 np_handler::get_default_route() const
+	{
+		return default_route;
 	}
 
 	s32 np_handler::get_net_status() const
@@ -851,6 +985,7 @@ namespace np
 			}
 
 			local_ip_addr  = std::bit_cast<u32, be_t<u32>>(rpcn->get_addr_local());
+			discover_route();
 
 			break;
 		}
@@ -1045,6 +1180,8 @@ namespace np
 
 	void np_handler::set_message_selected(SceNpBasicAttachmentDataId id, u64 msg_id)
 	{
+		std::lock_guard lock(m_mutex_selected_messages);
+
 		switch (id)
 		{
 		case SCE_NP_BASIC_SELECTED_INVITATION_DATA:
@@ -1060,6 +1197,8 @@ namespace np
 
 	std::optional<shared_ptr<std::pair<std::string, message_data>>> np_handler::get_message_selected(SceNpBasicAttachmentDataId id)
 	{
+		std::lock_guard lock(m_mutex_selected_messages);
+
 		switch (id)
 		{
 		case SCE_NP_BASIC_SELECTED_INVITATION_DATA:
@@ -1079,6 +1218,8 @@ namespace np
 
 	void np_handler::clear_message_selected(SceNpBasicAttachmentDataId id)
 	{
+		std::lock_guard lock(m_mutex_selected_messages);
+
 		switch (id)
 		{
 		case SCE_NP_BASIC_SELECTED_INVITATION_DATA:
@@ -1098,6 +1239,29 @@ namespace np
 		msg_data.print();
 
 		get_rpcn()->send_message(msg_data, npids);
+	}
+
+	bool np_handler::select_invitation(u64 msg_id)
+	{
+		const auto message = get_message(msg_id);
+
+		if (!message || message.value()->second.mainType != SCE_NP_BASIC_MESSAGE_MAIN_TYPE_INVITE)
+		{
+			rpcn_log.error("Cannot select invalid invitation: msg_id=%d", msg_id);
+			return false;
+		}
+
+		set_message_selected(SCE_NP_BASIC_SELECTED_INVITATION_DATA, msg_id);
+
+		if (sysutil_send_system_cmd(CELL_SYSUTIL_NP_INVITATION_SELECTED, 0) <= 0)
+		{
+			clear_message_selected(SCE_NP_BASIC_SELECTED_INVITATION_DATA);
+			rpcn_log.error("Failed to notify the game about selected invitation: msg_id=%d", msg_id);
+			return false;
+		}
+
+		get_rpcn()->mark_message_used(msg_id);
+		return true;
 	}
 
 	void np_handler::operator()()
@@ -1177,6 +1341,7 @@ namespace np
 					case rpcn::CommandType::GetRoomInfoGUI: reply_get_room_info_gui(req_id, error, reply_data); break;
 					case rpcn::CommandType::QuickMatchGUI: reply_quickmatch_gui(req_id, error, reply_data); break;
 					case rpcn::CommandType::SearchJoinRoomGUI: reply_searchjoin_gui(req_id, error, reply_data); break;
+					case rpcn::CommandType::GetTss: reply_get_tss(req_id, error, reply_data); break;
 					default: fmt::throw_exception("Unknown reply(%d) received!", command); break;
 					}
 				}
@@ -1303,7 +1468,7 @@ namespace np
 		}
 	}
 
-	bool np_handler::error_and_disconnect(const std::string& error_msg)
+	bool np_handler::error_and_disconnect(std::string_view error_msg)
 	{
 		rpcn_log.error("%s", error_msg);
 		rpcn.reset();
@@ -1607,6 +1772,32 @@ namespace np
 			presence_self.advertised = true;
 			rpcn->send_presence(presence_self.pr_com_id, presence_self.pr_title, presence_self.pr_status, presence_self.pr_comment, presence_self.pr_data);
 		}
+	}
+
+	void np_handler::rpcn_trophy_unlock(const SceNpCommunicationId& communication_id, s32 trophy_id, s64 timestamp)
+	{
+		if (!is_psn_active || g_cfg.net.psn_status != np_psn_status::psn_rpcn)
+			return;
+
+		std::lock_guard lock(mutex_rpcn);
+		if (!rpcn || !rpcn->is_authentified())
+			return;
+
+		rpcn->unlock_trophy(communication_id, trophy_id, timestamp);
+	}
+
+	std::vector<std::pair<s32, s64>> np_handler::rpcn_trophy_sync(
+		const SceNpCommunicationId& communication_id,
+		const std::vector<std::pair<s32, s64>>& local_unlocked)
+	{
+		if (!is_psn_active || g_cfg.net.psn_status != np_psn_status::psn_rpcn)
+			return {};
+
+		std::lock_guard lock(mutex_rpcn);
+		if (!rpcn || !rpcn->is_authentified())
+			return {};
+
+		return rpcn->sync_trophies(communication_id, local_unlocked);
 	}
 
 	template <typename T>

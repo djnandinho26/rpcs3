@@ -200,9 +200,9 @@ bool evdev_joystick_handler::update_device(const std::shared_ptr<PadDevice>& dev
 			libevdev_free(dev);
 			close(fd);
 			dev = nullptr;
+			evdev_log.error("Joystick %s is not present or accessible anymore", path.c_str());
 		}
 
-		evdev_log.error("Joystick %s is not present or accessible [previous status: %d]", path.c_str(), was_connected ? 1 : 0);
 		return false;
 	}
 
@@ -371,7 +371,7 @@ PadHandlerBase::connection evdev_joystick_handler::get_next_button_press(const s
 
 	const auto data = GetButtonValues(device);
 
-	const auto find_value = [&, this](const std::string& str)
+	const auto find_value = [&, this](std::string_view str)
 	{
 		const std::vector<pad::combo> combos = cfg_pad::get_combos(str);
 
@@ -1310,15 +1310,19 @@ void evdev_joystick_handler::apply_input_events(const std::shared_ptr<Pad>& pad)
 	}
 
 	u16 lx, ly, rx, ry;
+	f32 l_angle, l_distance_to_center, r_angle, r_distance_to_center;
 
 	// Normalize and apply pad squircling
-	convert_stick_values(lx, ly, stick_val[0], stick_val[1], cfg->lstickdeadzone, cfg->lstick_anti_deadzone, cfg->lpadsquircling);
-	convert_stick_values(rx, ry, stick_val[2], stick_val[3], cfg->rstickdeadzone, cfg->rstick_anti_deadzone, cfg->rpadsquircling);
+	convert_stick_values(lx, ly, stick_val[0], stick_val[1], cfg->lstickdeadzone, cfg->lstick_anti_deadzone, cfg->lpadsquircling, l_angle, l_distance_to_center);
+	convert_stick_values(rx, ry, stick_val[2], stick_val[3], cfg->rstickdeadzone, cfg->rstick_anti_deadzone, cfg->rpadsquircling, r_angle, r_distance_to_center);
 
 	pad->m_sticks[0].m_value = lx;
 	pad->m_sticks[1].m_value = 255 - ly;
 	pad->m_sticks[2].m_value = rx;
 	pad->m_sticks[3].m_value = 255 - ry;
+
+	pad->m_angles[0] = ConvertAngleToU8(l_angle, l_distance_to_center);
+	pad->m_angles[1] = ConvertAngleToU8(r_angle, r_distance_to_center);
 }
 
 void evdev_joystick_handler::apply_pad_data(const pad_ensemble& binding)
@@ -1419,7 +1423,7 @@ bool evdev_joystick_handler::bindPadToDevice(std::shared_ptr<Pad> pad)
 		e_sensor.mirrored = sensor.mirrored.get();
 		e_sensor.shift = sensor.shift.get();
 
-		const std::vector<std::set<u32>> combos = find_key_combos(motion_axis_list, sensor.axis);
+		const std::vector<std::set<u32>> combos = find_key_combos(motion_axis_list, sensor.axis.to_string());
 		if (!combos.empty() && !combos.front().empty()) e_sensor.code = *combos.front().begin(); // We should only have one key for each of our sensors
 		return e_sensor;
 	};

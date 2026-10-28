@@ -44,10 +44,10 @@ class gdb_thread
 	//acknowledge packet, either as accepted or declined
 	void ack(bool accepted);
 	//sends command body cmd to client
-	void send_cmd(const std::string& cmd);
+	void send_cmd(std::string_view cmd);
 	//sends command to client until receives positive acknowledgement
 	//returns false in case some error happened, and command wasn't sent
-	bool send_cmd_ack(const std::string& cmd);
+	bool send_cmd_ack(std::string_view cmd);
 	//appends encoded char c to string str, and returns checksum. encoded byte can occupy 2 bytes
 	static u8 append_encoded_char(char c, std::string& str);
 	//convert u8 to 2 byte hexademical representation
@@ -57,7 +57,7 @@ class gdb_thread
 	//returns register value as hex string by register id (in gdb), in case of wrong id returns empty string
 	static std::string get_reg(ppu_thread* thread, u32 rid);
 	//sets register value to hex string by register id (in gdb), in case of wrong id returns false
-	static bool set_reg(ppu_thread* thread, u32 rid, const std::string& value);
+	static bool set_reg(ppu_thread* thread, u32 rid, std::string_view value);
 	//returns size of register with id rid in bytes, zero if invalid rid is provided
 	static u32 get_reg_size(ppu_thread* thread, u32 rid);
 	//send reason of stop, returns false if sending response failed
@@ -66,24 +66,24 @@ class gdb_thread
 	void wait_with_interrupts();
 
 	//commands
-	bool cmd_extended_mode(gdb_cmd& cmd);
-	bool cmd_reason(gdb_cmd& cmd);
-	bool cmd_supported(gdb_cmd& cmd);
-	bool cmd_thread_info(gdb_cmd& cmd);
-	bool cmd_current_thread(gdb_cmd& cmd);
-	bool cmd_read_register(gdb_cmd& cmd);
-	bool cmd_write_register(gdb_cmd& cmd);
-	bool cmd_read_memory(gdb_cmd& cmd);
-	bool cmd_write_memory(gdb_cmd& cmd);
-	bool cmd_read_all_registers(gdb_cmd& cmd);
-	bool cmd_write_all_registers(gdb_cmd& cmd);
-	bool cmd_set_thread_ops(gdb_cmd& cmd);
-	bool cmd_attached_to_what(gdb_cmd& cmd);
-	static bool cmd_kill(gdb_cmd& cmd);
-	bool cmd_continue_support(gdb_cmd& cmd);
-	bool cmd_vcont(gdb_cmd& cmd);
-	bool cmd_set_breakpoint(gdb_cmd& cmd);
-	bool cmd_remove_breakpoint(gdb_cmd& cmd);
+	bool cmd_extended_mode(const gdb_cmd& cmd);
+	bool cmd_reason(const gdb_cmd& cmd);
+	bool cmd_supported(const gdb_cmd& cmd);
+	bool cmd_thread_info(const gdb_cmd& cmd);
+	bool cmd_current_thread(const gdb_cmd& cmd);
+	bool cmd_read_register(const gdb_cmd& cmd);
+	bool cmd_write_register(const gdb_cmd& cmd);
+	bool cmd_read_memory(const gdb_cmd& cmd);
+	bool cmd_write_memory(const gdb_cmd& cmd);
+	bool cmd_read_all_registers(const gdb_cmd& cmd);
+	bool cmd_write_all_registers(const gdb_cmd& cmd);
+	bool cmd_set_thread_ops(const gdb_cmd& cmd);
+	bool cmd_attached_to_what(const gdb_cmd& cmd);
+	static bool cmd_kill(const gdb_cmd& cmd);
+	bool cmd_continue_support(const gdb_cmd& cmd);
+	bool cmd_vcont(const gdb_cmd& cmd);
+	bool cmd_set_breakpoint(const gdb_cmd& cmd);
+	bool cmd_remove_breakpoint(const gdb_cmd& cmd);
 
 public:
 	bool from_breakpoint = true;

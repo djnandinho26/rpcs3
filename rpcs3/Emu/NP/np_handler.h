@@ -37,6 +37,7 @@ namespace np
 		SCORE = 0x3334,
 		TUS = 0x3335,
 		GUI = 0x3336,
+		LOOKUP = 0x3337,
 	};
 
 	struct ticket_data
@@ -65,7 +66,7 @@ namespace np
 		ticket() = default;
 		ticket(std::vector<u8>&& raw_data);
 
-		std::size_t size() const;
+		usz size() const;
 		const u8* data() const;
 		bool empty() const;
 
@@ -73,11 +74,11 @@ namespace np
 		std::string get_service_id() const;
 
 	private:
-		std::optional<ticket_data> parse_node(std::size_t index) const;
+		std::optional<ticket_data> parse_node(usz index) const;
 		void parse();
 
 	private:
-		static constexpr std::size_t MIN_TICKET_DATA_SIZE = 4;
+		static constexpr usz MIN_TICKET_DATA_SIZE = 4;
 
 		std::vector<u8> raw_data;
 
@@ -110,6 +111,8 @@ namespace np
 		u32 get_public_ip_addr() const;
 		u32 get_dns_ip() const;
 		u32 get_bind_ip() const;
+		u32 get_netmask() const;
+		u32 get_default_route() const;
 
 		s32 get_psn_status() const;
 		s32 get_net_status() const;
@@ -155,6 +158,7 @@ namespace np
 		std::optional<shared_ptr<std::pair<std::string, message_data>>> get_message_selected(SceNpBasicAttachmentDataId id);
 		void clear_message_selected(SceNpBasicAttachmentDataId id);
 		void send_message(const message_data& msg_data, const std::set<std::string>& npids);
+		bool select_invitation(u64 msg_id);
 
 		// Those should probably be under match2 ctx
 		vm::ptr<SceNpMatching2RoomEventCallback> room_event_cb{}; // Room events
@@ -230,6 +234,8 @@ namespace np
 		void tus_get_multiuser_data_status(shared_ptr<tus_transaction_ctx>& trans_ctx, std::vector<SceNpOnlineId> targetNpIdArray, SceNpTusSlotId slotId, vm::ptr<SceNpTusDataStatus> statusArray, s32 arrayNum, bool vuser, bool async);
 		void tus_get_friends_data_status(shared_ptr<tus_transaction_ctx>& trans_ctx, SceNpTusSlotId slotId, s32 includeSelf, s32 sortType, vm::ptr<SceNpTusDataStatus> statusArray, s32 arrayNum, bool async);
 		void tus_delete_multislot_data(shared_ptr<tus_transaction_ctx>& trans_ctx, const SceNpOnlineId& targetNpId, vm::cptr<SceNpTusSlotId> slotIdArray, s32 arrayNum, bool vuser, bool async);
+		void tus_get_tss(shared_ptr<tus_transaction_ctx>& trans_ctx, SceNpTssSlotId slotId, vm::ptr<SceNpTssDataStatus> dataStatus, vm::ptr<void> data, u32 recvSize, vm::ptr<SceNpTssGetDataOptParam> option, bool async);
+		void lookup_get_tss(shared_ptr<lookup_transaction_ctx>& trans_ctx, vm::ptr<void> data, u32 maxSize, vm::ptr<u32> contentLength, bool async);
 
 		// Local functions
 		std::pair<error_code, std::optional<SceNpId>> local_get_npid(u64 room_id, u16 member_id);
@@ -247,6 +253,11 @@ namespace np
 		u32 get_num_blocks();
 		std::pair<error_code, std::optional<SceNpId>> get_friend_by_index(u32 index);
 		void set_presence(std::optional<std::string> status, std::optional<std::vector<u8>> data);
+
+		// RPCN trophy support
+		void rpcn_trophy_unlock(const SceNpCommunicationId& communication_id, s32 trophy_id, s64 timestamp);
+		std::vector<std::pair<s32, s64>> rpcn_trophy_sync(const SceNpCommunicationId& communication_id,
+		    const std::vector<std::pair<s32, s64>>& local_unlocked);
 
 		template <typename T>
 		error_code get_friend_presence_by_index(u32 index, SceNpUserInfo* user, T* pres);
@@ -267,7 +278,7 @@ namespace np
 		error_code abort_request(u32 req_id);
 
 		// For signaling
-		void req_sign_infos(const std::string& npid, u32 conn_id);
+		void req_sign_infos(std::string_view npid, u32 conn_id);
 
 		// For UPNP
 		void upnp_add_port_mapping(u16 internal_port, std::string_view protocol);
@@ -297,7 +308,8 @@ namespace np
 		// Various generic helpers
 		bool discover_ip_address();
 		bool discover_ether_address();
-		bool error_and_disconnect(const std::string& error_msg);
+		void discover_route();
+		bool error_and_disconnect(std::string_view error_msg);
 
 		// Notification handlers
 		void notif_user_joined_room(vec_stream& noti);
@@ -355,6 +367,7 @@ namespace np
 		void reply_tus_get_multiuser_data_status(u32 req_id, rpcn::ErrorType error, vec_stream& reply);
 		void reply_tus_get_friends_data_status(u32 req_id, rpcn::ErrorType error, vec_stream& reply);
 		void reply_tus_delete_multislot_data(u32 req_id, rpcn::ErrorType error);
+		void reply_get_tss(u32 req_id, rpcn::ErrorType error, vec_stream& reply);
 		void reply_create_room_gui(u32 req_id, rpcn::ErrorType error, vec_stream& reply);
 		void reply_join_room_gui(u32 req_id, rpcn::ErrorType error, vec_stream& reply);
 		void reply_leave_room_gui(u32 req_id, rpcn::ErrorType error, vec_stream& reply);
@@ -373,6 +386,8 @@ namespace np
 		void handle_TusVarResponse(u32 req_id, rpcn::ErrorType error, vec_stream& reply);
 		void handle_TusVariable(u32 req_id, rpcn::ErrorType error, vec_stream& reply);
 		void handle_TusDataStatusResponse(u32 req_id, rpcn::ErrorType error, vec_stream& reply);
+		template <typename T>
+		void handle_reply_get_tss(u32 req_id, const std::vector<u8>& data, u64 timestamp, bool cond_fail);
 
 		struct callback_info
 		{
@@ -425,6 +440,8 @@ namespace np
 		be_t<u32> public_ip_addr{};
 		be_t<u32> dns_ip = 0x08080808;
 		be_t<u32> bind_ip = 0x00000000;
+		be_t<u32> netmask{};
+		be_t<u32> default_route{};
 
 		// User infos
 		SceNpId npid{};
@@ -440,6 +457,7 @@ namespace np
 		gui_cache_manager gui_cache;
 
 		// Messages related
+		shared_mutex m_mutex_selected_messages;
 		std::optional<u64> selected_invite_id{};
 		std::optional<u64> selected_message_id{};
 
@@ -459,6 +477,11 @@ namespace np
 		u32 get_req_id(REQUEST_ID_HIGH int_req)
 		{
 			return ((static_cast<u16>(int_req) << 16) | match2_low_reqid_cnt.fetch_add(1));
+		}
+
+		REQUEST_ID_HIGH get_req_type(u32 req_id)
+		{
+			return static_cast<REQUEST_ID_HIGH>(req_id >> 16);
 		}
 
 		u32 get_event_key()

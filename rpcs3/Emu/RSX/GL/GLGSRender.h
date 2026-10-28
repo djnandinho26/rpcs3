@@ -6,6 +6,7 @@
 #include "GLOverlays.h"
 #include "GLShaderInterpreter.h"
 #include "Emu/RSX/rsx_cache.h"
+#include "util/asm.hpp"
 
 #include <optional>
 #include <unordered_map>
@@ -45,16 +46,16 @@ namespace gl
 		u32  address_to_flush = 0;
 		gl::texture_cache::thrashed_set section_data;
 
-		volatile bool processed = false;
+		atomic_t<bool> processed = false;
 		volatile bool result = false;
-		volatile bool received = false;
+		atomic_t<bool> received = false;
 
 		void producer_wait()
 		{
-			while (!processed)
+			utils::spin_wait(processed, [](auto v)
 			{
-				std::this_thread::yield();
-			}
+				return v;
+			});
 
 			received = true;
 		}
@@ -141,6 +142,8 @@ class GLGSRender : public GSRender, public ::rsx::reports::ZCULL_control
 	std::unique_ptr<gl::texture> m_sshot_tex;
 	std::unique_ptr<gl::upscaler> m_upscaler;
 	output_scaling_mode m_output_scaling = output_scaling_mode::bilinear;
+	int m_last_client_width = 0;  // Window size of the last presented frame
+	int m_last_client_height = 0;
 
 	// VAOs are mandatory for core profile
 	gl::vao m_vao;
@@ -183,7 +186,6 @@ private:
 
 	void load_texture_env();
 	void bind_texture_env();
-	void bind_interpreter_texture_env();
 
 	gl::texture* get_present_source(gl::present_surface_info* info, const rsx::avconf& avconfig);
 

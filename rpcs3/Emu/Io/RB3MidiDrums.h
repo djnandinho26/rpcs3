@@ -1,8 +1,8 @@
 #pragma once
 
 #include "Emu/Io/usb_device.h"
+#include "util/midi_types.h"
 
-#include <rtmidi_c.h>
 #include <chrono>
 #include <vector>
 #include <optional>
@@ -109,7 +109,7 @@ enum class Note : u8
 class usb_device_rb3_midi_drums : public usb_device_emulated
 {
 public:
-	usb_device_rb3_midi_drums(const std::array<u8, 7>& location, const std::string& device_name);
+	usb_device_rb3_midi_drums(const std::array<u8, 7>& location, std::string_view device_name);
 	~usb_device_rb3_midi_drums();
 
 	void control_transfer(u8 bmRequestType, u8 bRequest, u16 wValue, u16 wIndex, u16 wLength, u32 buf_size, u8* buf, UsbTransfer* transfer) override;
@@ -118,7 +118,7 @@ public:
 private:
 	usz response_pos{};
 	bool buttons_enabled{};
-	RtMidiInPtr midi_in{};
+	midi_ptr midi_in{};
 	std::vector<rb3drums::KitState> kit_states;
 	bool hold_kick{};
 	bool midi_cc_triggered{};
